@@ -1,6 +1,8 @@
 import os
 import math
 import random
+import threading
+import subprocess
 import pygame
 import constants as C
 import fonts
@@ -9,6 +11,117 @@ from battle import Battle
 from overworld import Overworld
 
 _BASE = os.path.dirname(os.path.abspath(__file__))
+
+
+class _AfplayMusic:
+    """Looping background music via macOS afplay — no pygame.mixer needed."""
+
+    def __init__(self):
+        self._proc   = None
+        self._path   = None
+        self._active = False
+        self._thread = None
+
+    def play(self, path: str, volume: float = 0.75):
+        self.stop()
+        self._path   = path
+        self._active = True
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def _loop(self):
+        vol_arg = str(round(max(0.0, min(1.0, 1.0)), 2))  # afplay vol is 0-1 via -v
+        while self._active and self._path:
+            try:
+                self._proc = subprocess.Popen(
+                    ['afplay', '-v', vol_arg, self._path],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                self._proc.wait()
+            except Exception:
+                break
+
+    def stop(self):
+        self._active = False
+        if self._proc:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
+            self._proc = None
+
+
+_music = _AfplayMusic()
+
+try:
+    import numpy as np
+    _NUMPY = True
+except ImportError:
+    _NUMPY = False
+
+# Bayer 4×4 ordered dithering matrix, normalized to [-0.5, 0.5]
+_BAYER = None
+if _NUMPY:
+    _BAYER = (np.array([
+        [ 0,  8,  2, 10],
+        [12,  4, 14,  6],
+        [ 3, 11,  1,  9],
+        [15,  7, 13,  5],
+    ], dtype=np.float32) / 16.0) - 0.5
+
+# Cache for pre-computed gradient shapes: (w, h) -> float32 array [0..1]
+_GLOW_SHAPES: dict = {}
+
+
+def _soft_glow(dest: pygame.Surface, cx: int, cy: int,
+               w: int, h: int, rgb: tuple, max_alpha: int,
+               power: float = 2.0, dither_strength: int = 0) -> None:
+    """
+    Blit a smooth radial gradient ellipse onto dest, centered at (cx, cy).
+
+    power          — falloff curve (2.0 = quadratic, higher = tighter core)
+    dither_strength — alpha jitter range for Bayer dithering (0 = off, 12 = subtle)
+    """
+    if max_alpha <= 0 or w < 2 or h < 2:
+        return
+
+    if _NUMPY:
+        key = (w, h)
+        if key not in _GLOW_SHAPES:
+            yy, xx = np.mgrid[0:h, 0:w]
+            dx = (xx - w / 2) / max(1, w / 2)
+            dy = (yy - h / 2) / max(1, h / 2)
+            dist = np.clip(np.sqrt(dx * dx + dy * dy), 0.0, 1.0)
+            _GLOW_SHAPES[key] = (1.0 - dist) ** power
+        shape = _GLOW_SHAPES[key]
+
+        alpha_f = shape * max_alpha
+        if dither_strength and _BAYER is not None:
+            tile = np.tile(_BAYER, (h // 4 + 1, w // 4 + 1))[:h, :w]
+            alpha_f = alpha_f + tile * dither_strength
+        alpha = np.clip(alpha_f, 0, 255).astype(np.uint8)
+
+        r, g, b = rgb
+        arr = np.empty((h, w, 4), dtype=np.uint8)
+        arr[:, :, 0] = r
+        arr[:, :, 1] = g
+        arr[:, :, 2] = b
+        arr[:, :, 3] = alpha
+
+        gsurf = pygame.image.frombuffer(arr.tobytes(), (w, h), 'RGBA').convert_alpha()
+    else:
+        # Fallback: many thin rings
+        gsurf = pygame.Surface((w, h), pygame.SRCALPHA)
+        r, g, b = rgb
+        steps = 24
+        for i in range(steps, 0, -1):
+            frac = i / steps
+            a = int(max_alpha * (frac ** power))
+            rw, rh = max(2, int(w * frac)), max(2, int(h * frac))
+            pygame.draw.ellipse(gsurf, (r, g, b, a // steps * 2),
+                                ((w - rw) // 2, (h - rh) // 2, rw, rh))
+
+    dest.blit(gsurf, (cx - w // 2, cy - h // 2))
 
 
 class GameState:
@@ -73,20 +186,14 @@ class Game:
             self.battle.draw()
 
     def _start_title_music(self):
-        try:
-            path = os.path.join(_BASE, 'assets', 'generated', 'title', 'title.mp3')
-            pygame.mixer.init()
-            pygame.mixer.music.load(path)
-            pygame.mixer.music.set_volume(0.75)
-            pygame.mixer.music.play(-1)
-        except Exception:
-            pass   # mixer unavailable in this build
+        path = os.path.join(_BASE, 'assets', 'music', 'title.mp3')
+        if os.path.exists(path):
+            _music.play(path, volume=0.75)
+        else:
+            print(f"[music] file not found: {path}")
 
     def _stop_music(self, fade_ms=1200):
-        try:
-            pygame.mixer.music.fadeout(fade_ms)
-        except Exception:
-            pass
+        _music.stop()
 
     def _start_overworld(self):
         self._stop_music()
@@ -206,22 +313,31 @@ class Game:
                             pygame.draw.line(hexsurf, (100, 65, 210, 10), hex_pts[i], hex_pts[j], 1)
             surf.blit(hexsurf, (0, 0))
 
-            # ── Glow layers (more layers, brighter pulse) ─────────────────────
+            # ── Smooth radial glow ────────────────────────────────────────────
             glow_pulse = math.sin(t * 1.8)
-            face_frac  = abs(cos_val)  # 1 when card faces viewer
-            for r_scale, base_a in [(2.8, 18), (2.1, 32), (1.55, 52), (1.15, 80)]:
-                gw = int(CW * r_scale)
-                gh = int(CH * r_scale * 0.52)
-                g  = pygame.Surface((gw, gh), pygame.SRCALPHA)
-                a  = max(0, min(255, int((base_a + 28 * glow_pulse) * (0.7 + 0.3 * face_frac))))
-                pygame.draw.ellipse(g, (50, 110, 255, a), (0, 0, gw, gh))
-                surf.blit(g, (card_cx - gw // 2, int(card_cy + bob) - gh // 2))
+            face_frac  = abs(cos_val)      # 1 when card faces viewer, 0 on edge
 
-            # Gold shimmer ring — pulses brighter when card faces viewer
-            ring_a = max(0, min(255, int((45 + 35 * math.sin(t * 2.3)) * (0.6 + 0.4 * face_frac))))
-            rg = pygame.Surface((CW + 50, CH + 50), pygame.SRCALPHA)
-            pygame.draw.ellipse(rg, (195, 165, 65, ring_a), (0, 0, CW + 50, CH + 50))
-            surf.blit(rg, (card_cx - (CW + 50) // 2, int(card_cy + bob) - (CH + 50) // 2))
+            # Outer wide blue halo — soft power curve, Bayer dithered
+            gw = int(CW * 2.8)
+            gh = int(CH * 2.8 * 0.52)
+            outer_a = max(0, min(200, int((90 + 35 * glow_pulse) * (0.6 + 0.4 * face_frac))))
+            _soft_glow(surf, card_cx, int(card_cy + bob),
+                       gw, gh, (40, 90, 255), outer_a,
+                       power=1.6, dither_strength=14)
+
+            # Inner tighter blue core — brighter, tighter falloff
+            iw = int(CW * 1.4)
+            ih = int(CH * 1.4 * 0.52)
+            inner_a = max(0, min(255, int((140 + 50 * glow_pulse) * (0.65 + 0.35 * face_frac))))
+            _soft_glow(surf, card_cx, int(card_cy + bob),
+                       iw, ih, (80, 140, 255), inner_a,
+                       power=2.4, dither_strength=8)
+
+            # Gold halo — wraps just outside the card
+            gold_a = max(0, min(180, int((70 + 45 * math.sin(t * 2.3)) * (0.55 + 0.45 * face_frac))))
+            _soft_glow(surf, card_cx, int(card_cy + bob),
+                       CW + 64, CH + 64, (210, 175, 60), gold_a,
+                       power=3.5, dither_strength=10)
 
             # ── Glitter (draw before card so card appears on top) ─────────────
             for g in self._glitter:

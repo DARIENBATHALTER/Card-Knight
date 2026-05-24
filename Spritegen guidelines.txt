@@ -1,0 +1,621 @@
+Card Knight: Astral Arcana - Asset List & Sprite Descriptors
+Global Style Descriptor
+
+Pixel art fantasy JRPG asset, early 2000s handheld action RPG proportions, inspired by Game Boy Advance-era isometric RPGs and high-resolution PSP-era Final Fantasy spritework. Clean readable silhouette, detailed but not noisy, warm painterly pixel shading, deep navy and antique gold accents, subtle magical glow effects, transparent background, no drop shadow unless specified, ready for 640x360 fantasy RPG game.
+
+For overworld assets:
+
+Flat isometric fantasy pixel art, top-down three-quarter perspective, consistent with a 640x360 indie RPG, painterly pixel texture, clean outline, transparent background, usable as modular map asset.
+
+For battle assets:
+
+Side-view tactical grid battle pixel art, fantasy card-magic JRPG style, ornate dark-blue and gold UI language, readable at small scale, dramatic magical VFX, transparent background unless background is requested.
+
+1. Main Character: Oden
+Oden - Core Visual Identity
+
+Oden is a young wandering Card Knight with sandy-blond spiky hair, blue eyes, youthful determined expression, deep navy scarf-cape with subtle gold arcane trim, leather traveler armor, brass/gold pauldrons and bracers, dark blue trousers, brown boots, red cloth tabs at the waist, sword sheathed across his back or hip, small card pouch or deck case at his belt. He looks like a fantasy JRPG protagonist, agile and heroic rather than bulky, with early 2000s Square Enix energy but original design.
+
+Key identifiers:
+
+Sandy-blond spiky hair
+Blue scarf-cape with gold trim
+Leather and light plate armor
+Red waist cloth
+Brass/gold details
+Sword
+Card Knight / magical duelist energy
+Oden - Overworld Idle Sprite, 8 Directions
+
+Oden overworld idle sprite sheet, humanoid proportions, not chibi, not squat, similar to Boktai / Mega Man Battle Network / Kingdom Hearts Chain of Memories overworld proportions. Eight static poses: up, down, left, right, up-left, up-right, down-left, down-right. Transparent background. Each sprite evenly spaced and labeled. Cape hangs naturally and shifts according to facing direction. Sword visible on back where appropriate.
+
+Oden - Run Animation, Cardinal Directions
+
+Oden four-frame running animation sprite sheet, directions up, down, left, right. Humanoid proportions, readable legs and alternating feet, cape flapping behind him like Solar Boy Django/Boktai. Each row contains one direction, four frames per row. Transparent background. Consistent scale, consistent outfit, consistent hair silhouette.
+
+Oden - Run Animation, Up Diagonals
+
+Oden four-frame running animation sprite sheet for diagonal movement up-left and up-right. Character should be visibly running away from camera at a diagonal, showing mostly back and side profile. Feet alternate clearly: frame 1 left foot forward, frame 2 passing pose, frame 3 right foot forward, frame 4 passing pose. Cape streams backward and slightly outward. Two rows: up-left and up-right, four frames each. Transparent background.
+
+Oden - Run Animation, Down Diagonals
+
+Oden four-frame running animation sprite sheet for diagonal movement down-left and down-right. Character should be visibly running toward camera at a diagonal, showing face and torso at three-quarter angle. Feet alternate clearly: frame 1 left foot forward, frame 2 passing pose, frame 3 right foot forward, frame 4 passing pose. Cape trails behind in opposite direction of travel. Two rows: down-left and down-right, four frames each. Transparent background.
+
+Oden - Battle Ready Pose
+
+Oden battle stance sprite, facing right, both feet planted, wide grounded stance, fists ready or one hand near card/deck, sword visible but not drawn unless specified. Blue scarf-cape flowing behind him to the left, blond spiky hair, focused expression, light armor and leather gear. Larger battle sprite scale, detailed pixel art, transparent background.
+
+Oden - Card Casting Pose
+
+Oden battle casting sprite, facing right, one hand extended forward holding a glowing arcane card, other arm back for balance, feet planted on magical circle, blue scarf-cape swept behind him, focused expression. Transparent background, optional blue-white magical aura around card.
+
+Oden - Sword Slash Pose
+
+Oden battle sprite, facing right, mid-slash with short sword or longsword, blue crescent slash effect, dynamic forward lean, cape trailing, feet grounded. Transparent background.
+
+Oden - Ranged Card Throw Pose
+
+Oden battle sprite, facing right, flicking or throwing a glowing card projectile, one hand extended, small blue-gold card leaving motion trail, cape and red cloth moving with action. Transparent background.
+
+2. Card Back / Title Screen Card
+Astral Arcana Card Back - Flat
+
+Flat dead-on view of the back of a fantasy playing card, deep navy blue textured surface, antique gold compass rose in the center, thin concentric circles, star chart lines, celestial dots, ornate gold border, subtle worn paper texture, symmetrical design, no glow, no perspective angle, no tilt, solid plain background or transparent background.
+
+Astral Arcana Card Back - Animated Glow Variant
+
+Back of a fantasy card, deep navy and antique gold compass design, floating slightly, soft blue magical glow around edges, tiny astral particles, faint rotating star-ring aura, suitable for title screen animation. Centered on dark solid background.
+
+Astral Arcana Card Icon
+
+Small square pixel icon of a navy-and-gold arcane card back with compass rose symbol, readable at 32x32 or 64x64, transparent background.
+
+3. Title Screen Assets
+Minimal Archaic Title Screen Background
+
+Dark navy-black parchment texture with faint celestial diagrams, ancient star charts, barely visible handwritten arcane script, fine gold border lines, subtle dust and grain, minimal archaic fantasy mood, no scenery, no characters, designed for 640x360 title screen.
+
+Title Logo: Card Knight: Astral Arcana
+
+Typographic fantasy title logo reading “CARD KNIGHT” with subtitle “ASTRAL ARCANA,” minimal archaic serif lettering, elegant wide tracking, antique gold and pale ivory lettering, small star/diamond ornaments, no bulky fantasy crest, no overdone header plaque, transparent background.
+
+Press Z To Start Button
+
+Minimal pixel UI prompt reading “PRESS Z TO START,” archaic serif font, pale gold/ivory text, thin ornamental horizontal lines and tiny star glyphs, transparent background, subtle blue highlight version for blinking animation.
+
+4. UI / Menu Assets
+Pause Menu Panel
+
+Dark navy translucent rectangular fantasy UI panel with antique gold border, thin ornamental corners, subtle parchment texture, pixel art style, transparent background outside panel. Suitable for pause menu options.
+
+Menu Cursor / Selection Bar
+
+Horizontal blue selection bar with antique gold border and small diamond/star accents at both ends, pixel art UI asset, transparent background, suitable for highlighting menu items.
+
+Character Status Panel
+
+Fantasy RPG character status panel, dark navy background, thin gold frame, space for portrait, HP/MP bars, level, EXP, stats, elemental affinity icons. Pixel art UI, transparent outside panel.
+
+Card Inventory Panel
+
+Card collection/deckbuilding UI panel, dark blue-black background, antique gold border, grid slots for cards, small cost gems along bottom, fantasy pixel art style.
+
+Battle Card Selection Menu
+
+Large ornate card selection interface for tactical battle, dark navy and gold trim, selected card preview on left, smaller cards in grid on right, code row along bottom, custom gauge at top, pixel art JRPG UI.
+
+Battle HUD
+
+Fantasy tactical battle HUD, top-left character portrait and HP, custom gauge, turn order icons at top center, ornate gold frames, dark navy panels, pixel art UI, transparent background.
+
+Elemental Affinity Bar
+
+Horizontal UI strip with elemental icons and multipliers: fire, water, wind, earth, lightning, ice, light, void. Small pixel art symbols, dark panel, gold border, readable numbers.
+
+5. Battlefield Assets
+Battle Grid - Forest Ruins
+
+Tactical battle grid battlefield, 3x3 blue player tiles on left, 3x3 red enemy tiles on right, ancient forest ruin background, mossy stone floor, broken columns, soft sunlight through trees, fantasy pixel art, 640x360 composition.
+
+Battle Grid Tiles - Player
+
+Set of blue stone battle grid tiles, square slabs with beveled edges, slight cracks, faint blue magical rim light, top-down isometric/three-quarter battle perspective, transparent background.
+
+Battle Grid Tiles - Enemy
+
+Set of red-brown stone battle grid tiles, square slabs with beveled edges, subtle red magical tint, cracked surface, transparent background.
+
+Neutral Battle Tile
+
+Gray mossy stone square battle tile, cracked ancient slab, no color allegiance, transparent background.
+
+Broken Battle Tile
+
+Damaged cracked battle tile with missing chunks and dark gaps, fantasy tactical grid, transparent background.
+
+Glowing Magic Circle Tile
+
+Stone battle tile with glowing blue-white magic circle, ancient runes, compass star pattern, transparent background.
+
+6. Overworld Environment Base Assets
+Flat Grassland Terrain
+
+Large flat isometric grassy terrain tile, painterly pixel art, soft patches of grass, tiny flowers, scattered small stones, no trees, no shrubs, no large objects, designed as base map for placing assets.
+
+Dirt Path Tile
+
+Flat isometric dirt path tile, worn beige-brown earth, soft grassy edges, small pebble texture, seamless fantasy RPG terrain tile.
+
+Cobblestone Path Tile
+
+Flat isometric cobblestone road tile, pale tan and gray stones, uneven hand-laid pattern, moss between stones, suitable for fantasy route between towns.
+
+Grass-to-Path Transition
+
+Isometric terrain transition tile where grass blends into dirt/cobblestone path, painterly pixel art, transparent edge option.
+
+River Edge Tile
+
+Flat isometric riverbank tile with clear blue water, grassy edge, small stones, soft highlights, no large props.
+
+Small Stone Bridge
+
+Low stone bridge asset for isometric overworld, simple arched bridge, mossy gray stones, no railings or very low railings, transparent background.
+
+Cliff Edge Tile
+
+Flat isometric grassy cliff edge, vertical rocky side, mossy top, suitable for floating plateau or elevated route, transparent background.
+
+7. Environmental Object Sprites
+Pine Tree - Small
+
+Small evergreen pine tree pixel art asset, dark green needles, brown trunk, fantasy RPG overworld style, transparent background.
+
+Pine Tree - Large
+
+Tall evergreen pine tree, layered branches, dark green and yellow-green highlights, readable outline, transparent background.
+
+Broadleaf Tree
+
+Round leafy fantasy tree with thick trunk, lush green canopy, slight painterly pixel texture, transparent background.
+
+Dead Tree
+
+Twisted leafless dead tree, dark bark, crooked branches, fantasy overworld obstacle, transparent background.
+
+Bush - Plain
+
+Small round green bush asset, low height, dense leaves, tiny white flowers, transparent background.
+
+Bush - Blue Berries
+
+Green berry bush with small blue berries, fantasy gathering node, transparent background.
+
+Bush - Yellow Flowers
+
+Low green bush with small yellow flowers, decorative overworld asset, transparent background.
+
+Bush - Pink Flowers
+
+Low flowering bush with pink blossoms, decorative overworld asset, transparent background.
+
+Small Rock
+
+Small gray rock asset with moss and grass at base, pixel art, transparent background.
+
+Rock Cluster
+
+Cluster of gray stones with moss and tiny flowers, medium overworld obstacle, transparent background.
+
+Standing Stone
+
+Vertical mossy gray standing stone, ancient marker style, small grass at base, transparent background.
+
+Large Boulder
+
+Large mossy boulder with angular facets, gray stone, small blue flowers at base, transparent background.
+
+Wooden Signpost - Single
+
+Simple wooden fantasy signpost, one plank pointing sideways, grass at base, no readable text or optional blank sign area, transparent background.
+
+Wooden Signpost - Multi
+
+Wooden signpost with multiple directional planks, rustic brown wood, fantasy route marker, transparent background.
+
+Notice Board
+
+Wooden town notice board with small parchment papers pinned to it, dark blue roof cap, fantasy RPG asset, transparent background.
+
+Wooden Fence Segment
+
+Short wooden fence segment, two horizontal rails, posts, grass at base, transparent background.
+
+Rope Fence Segment
+
+Short rope-and-post barrier, wooden posts connected by sagging rope, transparent background.
+
+Tree Stump
+
+Cut tree stump with visible rings, moss and grass at base, transparent background.
+
+Flower Patch - White
+
+Small patch of white wildflowers, green leaves, decorative ground asset, transparent background.
+
+Flower Patch - Purple
+
+Small patch of purple wildflowers or lavender, fantasy meadow asset, transparent background.
+
+Blue Crystal Cluster
+
+Glowing blue crystal cluster growing from grass and stone, magical gathering node, transparent background.
+
+Purple Crystal Cluster
+
+Glowing purple crystal cluster, void/arcane resource node, transparent background.
+
+Wooden Chest
+
+Small wooden treasure chest with metal bands, closed, fantasy RPG overworld asset, transparent background.
+
+Astral Chest
+
+Blue-and-gold ornate treasure chest with star emblem, magical card reward chest, transparent background.
+
+Wooden Barrel
+
+Round wooden barrel with metal bands, fantasy town/dungeon prop, transparent background.
+
+Blue Guild Barrel
+
+Blue painted barrel with gold Card Knight emblem, fantasy prop, transparent background.
+
+Wooden Crate
+
+Square wooden crate, cross-plank construction, transparent background.
+
+Blue Astral Crate
+
+Blue-and-gold crate with star/compass emblem, magical supply crate, transparent background.
+
+8. Dungeon Assets
+Ancient Stone Wall
+
+Modular dungeon wall segment, dark gray stone blocks, moss and cracks, top-down isometric fantasy pixel art, transparent background.
+
+Ruined Pillar
+
+Broken stone pillar, ancient dungeon ruin, mossy cracks, transparent background.
+
+Blue Crystal Torch
+
+Stone pedestal with glowing blue crystal flame/light, fantasy dungeon light source, transparent background.
+
+Fire Brazier
+
+Stone brazier with orange flame, warm glow, dungeon prop, transparent background.
+
+Sealed Door
+
+Large ancient stone door with blue glowing runes and circular lock sigil, fantasy dungeon entrance, transparent background.
+
+Rune Floor Plate
+
+Square stone floor plate engraved with glowing blue rune circle, puzzle tile, transparent background.
+
+Raised Altar Circle
+
+Round stone altar platform with glowing astral sigil, broken pillars around it, blue rune light, transparent background.
+
+Dungeon Gap / Chasm Edge
+
+Broken stone floor edge with dark void beneath, modular dungeon tile asset, transparent background.
+
+9. Enemies
+Slime
+
+Cute green fantasy slime enemy, small rounded body, simple happy but mischievous face, shiny highlights, pixel art battle sprite, transparent background.
+
+Possible variants:
+
+Green Slime - neutral
+Aqua Slime - water
+Ember Slime - fire
+Void Slime - purple/dark
+Goblin Mage
+
+Small goblin spellcaster enemy, purple hood, crooked staff with glowing orb, hunched posture, mischievous expression, battle sprite facing left, transparent background.
+
+Wolf Beast
+
+Small armored wolf enemy, gray fur, leather harness or small metal plates, aggressive stance, battle sprite facing left, transparent background.
+
+Pumpkin Imp
+
+Animated pumpkin-headed imp enemy, orange jack-o-lantern body, vine stem, small claws, spooky but charming, battle sprite facing left, transparent background.
+
+Lizard Knight
+
+Small reptilian knight enemy, dark green scales, bronze armor, short spear or blade, battle sprite facing left, transparent background.
+
+Ruin Guardian
+
+Stone golem guardian enemy, mossy stone body, glowing blue rune core, heavy stance, battle sprite facing left, transparent background.
+
+Astral Wisp
+
+Floating magical wisp enemy, blue-white glow, tiny star particles, translucent body, no legs, battle sprite, transparent background.
+
+10. Card-Type Runes / Card Icons
+Sword Slash Card
+
+Fantasy battle card icon showing glowing blue sword slash, antique gold border, dark navy card frame, small code letter and cost gem space, pixel art.
+
+Ranged Attack Card
+
+Fantasy battle card icon showing two throwing daggers or flying cards, silver/blue motion trails, dark navy card frame, antique gold border.
+
+Ignis Card
+
+Fire spell card icon, orange-red flame sigil, dark card background, gold frame, readable at small size.
+
+Aqua Card
+
+Water spell card icon, glowing blue droplet, dark card background, gold frame.
+
+Terra Card
+
+Earth spell card icon, stone fist or rocky shard, brown-gold earth tones, dark card background, gold frame.
+
+Aero Card
+
+Wind spell card icon, green spiral gust, dark card background, gold frame.
+
+Thundara / Lightning Card
+
+Lightning spell card icon, golden lightning bolt, electric glow, dark card background, gold frame.
+
+Blizzard / Ice Card
+
+Ice spell card icon, pale blue snowflake or ice spear, frosty glow, dark card background, gold frame.
+
+Holy Card
+
+Light spell card icon, golden-white starburst, sacred glow, dark card background, gold frame.
+
+Void Card
+
+Void spell card icon, purple-black orb, dark vortex, faint violet glow, dark card background, gold frame.
+
+Cure Leaf Card
+
+Healing card icon, bright green leaf with soft healing glow, dark background, gold frame.
+
+Bomb Flask Card
+
+Item card icon, round bomb flask with fuse, orange glow, dark background, gold frame.
+
+Astral Aegis Summon Card
+
+Legendary summon card icon, celestial white wolf-dragon spirit with gold astral armor, blue cosmic background, ornate gold border.
+
+11. Projectiles
+Thrown Card Projectile
+
+Small glowing blue-gold magical card projectile, angled forward, trailing pale blue particles, transparent background.
+
+Sword Beam
+
+Blue crescent sword beam projectile, sharp arc, bright leading edge, pixel art VFX, transparent background.
+
+Fireball
+
+Small orange-red fireball projectile with yellow core and ember trail, transparent background.
+
+Ice Lance
+
+Long pale-blue ice spear projectile, crystalline facets, frosty trail, transparent background.
+
+Lightning Bolt
+
+Jagged golden lightning projectile, branching small arcs, high contrast, transparent background.
+
+Wind Crescent
+
+Green crescent gust projectile, swirling leaves or particles, transparent background.
+
+Stone Shard
+
+Flying jagged rock shard projectile, brown-gray, small dust trail, transparent background.
+
+Holy Ray
+
+Thin golden-white beam projectile with star particles, transparent background.
+
+Void Orb
+
+Purple-black orb projectile, smoky violet trail, transparent background.
+
+12. Elemental Effects
+Ignis - Tier 1 Fire
+
+Small fire burst VFX, orange flame impact, a few sparks, transparent background, pixel art.
+
+Ignora - Tier 2 Fire
+
+Medium circular flame eruption, red-orange ring, embers rising, transparent background.
+
+Ignaeon - Tier 3 Fire
+
+Large astral flame pillar, golden-orange magic circle below, embers and star particles, transparent background.
+
+Aqua - Tier 1 Water
+
+Small water splash impact, blue droplets, transparent background.
+
+Aquora - Tier 2 Water
+
+Medium spiraling water column, blue-white highlights, transparent background.
+
+Aquaeon - Tier 3 Water
+
+Large celestial tidal burst, glowing blue rune circle, waves and star-spray, transparent background.
+
+Aero - Tier 1 Wind
+
+Small green wind slash, spiral gust, transparent background.
+
+Aerora - Tier 2 Wind
+
+Medium vortex gust with leaves and spiral lines, transparent background.
+
+Aeraeon - Tier 3 Wind
+
+Large emerald cyclone magic effect with circular rune pattern, transparent background.
+
+Terra - Tier 1 Earth
+
+Small rock spike eruption from ground, dust puff, transparent background.
+
+Terora - Tier 2 Earth
+
+Medium stone pillar burst, cracked ground effect, transparent background.
+
+Terraeon - Tier 3 Earth
+
+Large earth sigil eruption, multiple stone spires, golden-brown shockwave, transparent background.
+
+Fulgis - Tier 1 Lightning
+
+Small yellow lightning strike impact, spark burst, transparent background.
+
+Fulgora - Tier 2 Lightning
+
+Branching lightning bolt hitting target, electric ground crackle, transparent background.
+
+Fulgaeon - Tier 3 Lightning
+
+Massive golden lightning storm across multiple grid tiles, bright arcs, magic circle, transparent background.
+
+Glacis - Tier 1 Ice
+
+Small ice shard impact, blue-white crystals, transparent background.
+
+Glacora - Tier 2 Ice
+
+Medium frost lance eruption, snow particles, transparent background.
+
+Glacaeon - Tier 3 Ice
+
+Large crystalline ice bloom, frosty magic circle, shimmering blue-white shards, transparent background.
+
+Lucis - Tier 1 Light
+
+Small holy starburst, gold-white sparkle impact, transparent background.
+
+Lucora - Tier 2 Light
+
+Medium sacred beam impact, radiant circle, gold particles, transparent background.
+
+Lucaeon - Tier 3 Light
+
+Large divine astral sigil, golden-white rays, sacred starfield effect, transparent background.
+
+Nyxis - Tier 1 Void
+
+Small purple-black shadow burst, transparent background.
+
+Nyxora - Tier 2 Void
+
+Medium dark vortex impact, violet particles, transparent background.
+
+Nyxaeon - Tier 3 Void
+
+Large cosmic void rift, black-purple portal, star fragments and gravitational distortion, transparent background.
+
+13. Summon Assets
+Astral Aegis - Summon Creature
+
+Large celestial wolf-dragon summon, white and pale blue fur/energy, gold astral armor lines, luminous eyes, flowing cosmic mane, surrounded by rotating golden rune rings and blue star particles, fantasy JRPG summon sprite, transparent background.
+
+Astral Aegis - Summon Circle
+
+Large blue-white magic circle with compass rose, ancient script, rotating concentric rings, star glyphs, transparent background.
+
+Astral Aegis - Beam Attack
+
+Wide blue-white astral beam slashing diagonally across battlefield, gold star particles, high-impact summon VFX, transparent background.
+
+Summon Arrival Flash
+
+Blue-white burst of light with star shards, circular rune flare, transparent background.
+
+14. Map / Route Assets
+East Road Crossroads
+
+Flat isometric route map, grassy plateau with intersecting cobblestone paths, gentle flowers and stones, minimal object clutter, ready for asset placement, fantasy pixel art background.
+
+Mountain Road
+
+Flat isometric mountain path terrain, grass and stone ledges, distant cliffs implied, light dirt/cobblestone road, minimal obstacles, ready for objects.
+
+Forest Route
+
+Flat isometric forest road base, grass and dirt path, soft dappled lighting, no large trees baked in, ready for placing tree sprites separately.
+
+River Meadow
+
+Flat isometric meadow terrain with shallow stream edge or river crossing, grass, flowers, stones, no large objects, ready for bridge/asset placement.
+
+Sunken Bastion Dungeon Base
+
+Isometric dungeon floor base, dark stone tiles, broken edges, gaps, blue crystal glow accents, minimal props baked in, ready for modular dungeon object placement.
+
+15. Small Decorative FX
+Blue Star Particle
+
+Tiny blue-white star sparkle particle, 4-frame twinkle animation, transparent background.
+
+Gold Spark Particle
+
+Tiny gold magical sparkle, 4-frame twinkle animation, transparent background.
+
+Dust Step Puff
+
+Small tan dust puff for running footsteps, 4-frame animation, transparent background.
+
+Cape Wind Accent
+
+Small blue motion streak or wind accent for Oden’s cape movement, transparent background.
+
+Card Draw Spark
+
+Small blue flash from card/deck, star-shaped particle burst, transparent background.
+
+Hit Spark
+
+White-yellow impact spark, sharp pixel starburst, transparent background.
+
+Damage Number Style
+
+White damage numbers with dark outline, slight gold or red accent for critical hits, pixel font, transparent background.
+
+16. Suggested First Production Batch
+
+For the demo, I’d prioritize these in this order:
+
+Oden overworld idle - 8 directions
+Oden run - 8 directions, 4 frames each
+Oden battle idle, cast, slash, card throw, hit, victory
+Flat grassland terrain set
+Path tiles and transition tiles
+Core environmental object sheet
+Battle grid tiles
+Slime, goblin mage, wolf, pumpkin imp
+Core cards: Sword Slash, Ranged, Ignis, Aqua, Terra, Aero, Fulgis, Glacis, Cure Leaf
+Core VFX: fire, lightning, ice, wind, healing, hit spark
+Title screen card and UI panels
+One summon: Astral Aegis
+
+That would be enough to build a convincing vertical slice: overworld movement, one route, one dungeon room, one battle, card selection, elemental effects, and a dramatic summon payoff.

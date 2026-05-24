@@ -1,6 +1,6 @@
 import pygame
 import sys
-from game import Game
+from game import Game, _music
 import constants as C
 import sprite_manager
 
@@ -15,19 +15,22 @@ def main():
     clock = pygame.time.Clock()
     game  = Game(screen)
 
-    while True:
-        dt = clock.tick(C.FPS) / 1000.0
-        dt = min(dt, 0.05)
+    try:
+        while True:
+            dt = clock.tick(C.FPS) / 1000.0
+            dt = min(dt, 0.05)
 
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-            game.handle_event(event)
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return
+                game.handle_event(event)
 
-        game.update(dt)
-        game.draw()
-        pygame.display.flip()
+            game.update(dt)
+            game.draw()
+            pygame.display.flip()
+    finally:
+        _music.stop()
+        pygame.quit()
 
 
 if __name__ == "__main__":
