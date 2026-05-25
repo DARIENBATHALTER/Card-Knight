@@ -2,6 +2,7 @@
 Sprite and tile loading for the battle network game.
 All images loaded via PIL (since pygame SDL2_image is unavailable on this build).
 """
+from __future__ import annotations
 import os
 import numpy as np
 from PIL import Image
@@ -110,6 +111,14 @@ def init():
         _load_title_assets()
     except Exception as e:
         print(f"[sprites] title assets load failed: {e}")
+    try:
+        _load_battlefield()
+    except Exception as e:
+        print(f"[sprites] battlefield load failed: {e}")
+    try:
+        _load_oden_victory()
+    except Exception as e:
+        print(f"[sprites] oden victory load failed: {e}")
     print("[sprites] init complete — loaded:", list(_CACHE.keys()))
 
 
@@ -233,11 +242,13 @@ def _load_card_sprites():
         _CACHE[f'card_{name}'] = _pil_to_surf(card)
 
     _CACHE['card_elem'] = {
-        C.ELEM_NONE: _CACHE.get('card_gray'),
-        C.ELEM_FIRE: _CACHE.get('card_red'),
-        C.ELEM_AQUA: _CACHE.get('card_blue'),
-        C.ELEM_ELEC: _CACHE.get('card_yellow'),
-        C.ELEM_WOOD: _CACHE.get('card_green'),
+        C.ELEM_NONE:      _CACHE.get('card_gray'),
+        C.ELEM_FIRE:      _CACHE.get('card_red'),
+        C.ELEM_ICE:       _CACHE.get('card_blue'),
+        C.ELEM_LIGHTNING: _CACHE.get('card_yellow'),
+        C.ELEM_EARTH:     _CACHE.get('card_green'),
+        C.ELEM_LIGHT:     _CACHE.get('card_gray'),
+        C.ELEM_DARK:      _CACHE.get('card_dark'),
     }
 
 
@@ -361,34 +372,122 @@ def _load_generated_player():
 # ── Generated slime enemy animations ─────────────────────────────────────────
 
 def _load_title_assets():
-    title_dir = _gen_path('title')
+    title_dir = _path('title')
     if not os.path.isdir(title_dir):
         return
+
+    # Title background (text + ornaments baked in; 1672×941 source → 1280×720)
     bg_p = os.path.join(title_dir, 'bg.png')
     if os.path.exists(bg_p):
         bg = Image.open(bg_p).convert('RGB')
-        bg = _scale(bg, (C.SCREEN_W, C.SCREEN_H))
-        raw = bg.tobytes()
-        _CACHE['title_bg'] = pygame.image.fromstring(raw, bg.size, 'RGB').convert()
+        bg = bg.resize((C.SCREEN_W, C.SCREEN_H), Image.LANCZOS)
+        _CACHE['title_bg'] = pygame.image.fromstring(
+            bg.tobytes(), bg.size, 'RGB').convert()
+
+    # Decorative card art (compass-rose tarot back) — still useful for the
+    # save-file panel and other UI flourishes.
     card_p = os.path.join(title_dir, 'card.png')
     if os.path.exists(card_p):
         card = Image.open(card_p).convert('RGBA')
         h = 230
         w = int(card.width * h / card.height)
-        _CACHE['title_card'] = _pil_to_surf(_scale(card, (w, h)))
+        _CACHE['title_card'] = _pil_to_surf(card.resize((w, h), Image.LANCZOS))
+
+    # Bridgewalker Studios logo for the cold-open intro
+    logo_p = os.path.join(title_dir, 'bridgewalker.png')
+    if os.path.exists(logo_p):
+        logo = Image.open(logo_p).convert('RGBA')
+        # Source is already 1280×720 — fit to screen, preserve aspect just in case
+        if logo.size != (C.SCREEN_W, C.SCREEN_H):
+            tw = C.SCREEN_W
+            th = int(logo.height * tw / logo.width)
+            logo = logo.resize((tw, th), Image.LANCZOS)
+        _CACHE['bridgewalker_logo'] = pygame.image.fromstring(
+            logo.tobytes(), logo.size, 'RGBA').convert_alpha()
+
+
+def _load_oden_victory():
+    """Full-body Oden victory pose for the end-of-battle screen."""
+    p = _gen_path('oden', 'fullbody.png')
+    if not os.path.exists(p):
+        return
+    img = Image.open(p).convert('RGBA')
+    # Scale to 560 px tall, preserving aspect (420×733 → 320×560)
+    target_h = 560
+    target_w = int(img.width * target_h / img.height)
+    img = img.resize((target_w, target_h), Image.LANCZOS)
+    _CACHE['oden_victory'] = pygame.image.fromstring(
+        img.tobytes(), img.size, 'RGBA').convert_alpha()
 
 
 def _load_generated_slime():
     anim_dir = _gen_path('slime_anims')
-    if not os.path.isdir(anim_dir):
+    if os.path.isdir(anim_dir):
+        S = (80, 80)
+        for anim in ('idle', 'hurt'):
+            frames = []
+            for i in range(4):
+                p = os.path.join(anim_dir, f'{anim}_f{i}.png')
+                if os.path.exists(p):
+                    img = _remove_colorkey(Image.open(p).convert('RGBA'))
+                    frames.append(_pil_to_surf(_scale(img, S)))
+            if frames:
+                _CACHE[f'gen_slime_{anim}'] = frames
+
+    # If a dedicated battle slime sprite exists, it overrides the multi-frame
+    # gen sprite above. (PNG must have proper alpha — no colorkey needed.)
+    battle_p = _path('sprites/enemies/slime_battle.png')
+    if os.path.exists(battle_p):
+        img = Image.open(battle_p).convert('RGBA')
+        S = (96, 96)
+        surf = _pil_to_surf(_scale(img, S))
+        _CACHE['gen_slime_idle'] = [surf]
+        _CACHE['gen_slime_hurt'] = [_flash_white(surf)]
+
+
+# ── Battlefield: backgrounds, platform, and warped per-tile sprites ───────────
+
+def _load_battlefield():
+    import tile_warp
+    bf_dir = _path('battlefields')
+    if not os.path.isdir(bf_dir):
         return
-    S = (80, 80)
-    for anim in ('idle', 'hurt'):
-        frames = []
-        for i in range(4):
-            p = os.path.join(anim_dir, f'{anim}_f{i}.png')
-            if os.path.exists(p):
-                img = _remove_colorkey(Image.open(p).convert('RGBA'))
-                frames.append(_pil_to_surf(_scale(img, S)))
-        if frames:
-            _CACHE[f'gen_slime_{anim}'] = frames
+
+    # Full-screen backgrounds (1280×720)
+    for name in ('crystalcave', 'forest', 'temple'):
+        p = os.path.join(bf_dir, f'{name}.png')
+        if os.path.exists(p):
+            bg = Image.open(p).convert('RGB')
+            if bg.size != (C.SCREEN_W, C.SCREEN_H):
+                bg = bg.resize((C.SCREEN_W, C.SCREEN_H), Image.LANCZOS)
+            _CACHE[f'bf_bg_{name}'] = pygame.image.fromstring(
+                bg.tobytes(), bg.size, 'RGB').convert()
+
+    # Platform stone-block frame (RGBA, 1280×720, sits between bg and tiles)
+    plat_p = os.path.join(bf_dir, 'platform.png')
+    if os.path.exists(plat_p):
+        plat = Image.open(plat_p).convert('RGBA')
+        if plat.size != (C.SCREEN_W, C.SCREEN_H):
+            plat = plat.resize((C.SCREEN_W, C.SCREEN_H), Image.LANCZOS)
+        _CACHE['bf_platform'] = pygame.image.fromstring(
+            plat.tobytes(), plat.size, 'RGBA').convert_alpha()
+
+    # Pre-bake 32 warped tile surfaces per owner (player/enemy).
+    # Keyed by (col, row, owner) → (surface, anchor_xy).
+    tile_p_path = os.path.join(bf_dir, 'tilesprite_player.png')
+    tile_e_path = os.path.join(bf_dir, 'tilesprite_enemy.png')
+    if not (os.path.exists(tile_p_path) and os.path.exists(tile_e_path)):
+        return
+    tile_player_src = Image.open(tile_p_path).convert('RGBA')
+    tile_enemy_src  = Image.open(tile_e_path).convert('RGBA')
+
+    warped: dict = {}
+    for owner_id, src_img in ((C.OWN_PLAYER, tile_player_src),
+                              (C.OWN_ENEMY,  tile_enemy_src)):
+        for row in range(C.GRID_ROWS):
+            for col in range(C.GRID_COLS):
+                quad = tile_warp.tile_quad(col, row)
+                surf, anchor = tile_warp.bake_quad(src_img, quad)
+                warped[(col, row, owner_id)] = (surf, anchor)
+    _CACHE['bf_tiles'] = warped
+

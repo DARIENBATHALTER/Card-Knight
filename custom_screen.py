@@ -49,11 +49,13 @@ OK_X       = C.CARD_PANEL_W - PAD - OK_W
 OK_Y       = CODE_Y + 2
 
 ELEM_BG = {
-    C.ELEM_NONE: ( 40,  36,  68),
-    C.ELEM_FIRE: ( 80,  30,   8),
-    C.ELEM_AQUA: (  8,  44,  80),
-    C.ELEM_ELEC: ( 72,  64,   8),
-    C.ELEM_WOOD: ( 16,  64,  16),
+    C.ELEM_NONE:      ( 40,  36,  68),
+    C.ELEM_FIRE:      ( 80,  30,   8),
+    C.ELEM_ICE:       (  8,  44,  80),
+    C.ELEM_LIGHTNING: ( 72,  64,   8),
+    C.ELEM_EARTH:     ( 16,  64,  16),
+    C.ELEM_LIGHT:     ( 72,  60,  24),
+    C.ELEM_DARK:      ( 36,   8,  60),
 }
 CLS_COLOR = {
     C.CLS_STANDARD: C.ORANGE,
@@ -91,6 +93,8 @@ def _draw_chip_icon_cs(surface, chip, cx, cy, size=12):
 class CustomScreen:
     MAX_SELECTABLE = 5
 
+    SLIDE_DURATION = 0.32
+
     def __init__(self, drawn_chips):
         self.chips = drawn_chips
         self.selected_indices = []
@@ -98,11 +102,29 @@ class CustomScreen:
         self.ok_focused = False   # True when cursor is on the OK button
         self.done   = False
         self.pa_chip = None
+        # Slide animation — 0 = fully off-left, 1 = fully open
+        self.slide_t = 0.0
+        self.closing = False
+
+    # ── Animation update (called by Battle) ──────────────────────────────────
+
+    def update(self, dt):
+        target = 0.0 if self.closing else 1.0
+        delta  = dt / self.SLIDE_DURATION
+        if self.slide_t < target:
+            self.slide_t = min(target, self.slide_t + delta)
+        elif self.slide_t > target:
+            self.slide_t = max(target, self.slide_t - delta)
+        if self.closing and self.slide_t <= 0.0:
+            self.done = True
 
     # ── Input ─────────────────────────────────────────────────────────────────
 
     def handle_event(self, event):
         if event.type != pygame.KEYDOWN:
+            return
+        # Block input while panel is animating in/out
+        if self.slide_t < 1.0 or self.closing:
             return
         n = len(self.chips)
 
@@ -159,7 +181,8 @@ class CustomScreen:
             )
 
     def _confirm(self):
-        self.done = True
+        # Start the slide-out animation; `done` will flip when slide_t hits 0.
+        self.closing = True
 
     def get_selected_chips(self):
         if self.pa_chip:
@@ -178,12 +201,26 @@ class CustomScreen:
     # ── Drawing ────────────────────────────────────────────────────────────────
 
     def draw(self, surface):
-        # Subtle tint on right side (battlefield still visible)
-        fog = pygame.Surface((C.SCREEN_W - C.CARD_PANEL_W, C.SCREEN_H), pygame.SRCALPHA)
-        fog.fill((0, 10, 60, 55))
-        surface.blit(fog, (C.CARD_PANEL_W, 0))
+        # Right-side fog fades in/out alongside the panel slide
+        fog_alpha = int(55 * self.slide_t)
+        if fog_alpha > 0:
+            fog = pygame.Surface((C.SCREEN_W - C.CARD_PANEL_W, C.SCREEN_H), pygame.SRCALPHA)
+            fog.fill((0, 10, 60, fog_alpha))
+            surface.blit(fog, (C.CARD_PANEL_W, 0))
 
-        # Cover left panel with navy from card area downward
+        # Build the panel on an offscreen surface, then blit at animated x
+        panel = pygame.Surface((C.CARD_PANEL_W, C.SCREEN_H), pygame.SRCALPHA)
+        self._render_panel_contents(panel)
+
+        eased = 1.0 - (1.0 - self.slide_t) ** 2     # ease-out quadratic
+        x_offset = int(-C.CARD_PANEL_W * (1.0 - eased))
+        surface.blit(panel, (x_offset, 0))
+
+    def _render_panel_contents(self, surface):
+        """Render the static panel layout to `surface` (CARD_PANEL_W wide).
+        The area above SEP_Y is left transparent so the battle HP widget shows
+        through; the area below is filled with navy."""
+        # Navy backdrop from card area downward
         pygame.draw.rect(surface, C.UI_NAVY,
                          pygame.Rect(0, SEP_Y, C.CARD_PANEL_W, C.SCREEN_H - SEP_Y))
 

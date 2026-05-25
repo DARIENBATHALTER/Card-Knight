@@ -2,16 +2,34 @@ import pygame
 import math
 import random
 import constants as C
+import tile_warp
 
 
 def _panel_center(col, row):
-    x = C.GRID_X + col * C.PANEL_W + C.PANEL_W // 2
-    y = C.GRID_Y + row * C.PANEL_H + C.PANEL_H // 2
-    return (x, y)
+    return tile_warp.tile_center(col, row)
+
+
+def _tile_poly(col, row, shrink=0):
+    """Integer polygon points for tile (col, row), optionally shrunk toward its center."""
+    quad = tile_warp.tile_quad(col, row)
+    if shrink:
+        cx = sum(p[0] for p in quad) / 4
+        cy = sum(p[1] for p in quad) / 4
+        shrunk = []
+        for x, y in quad:
+            dx, dy = x - cx, y - cy
+            d = max(1.0, math.hypot(dx, dy))
+            f = max(0.0, 1.0 - shrink / d)
+            shrunk.append((cx + dx * f, cy + dy * f))
+        quad = shrunk
+    return [(int(p[0]), int(p[1])) for p in quad]
 
 
 class Effect:
     alive = True
+    # 'floor' = drawn between tiles and entities (highlights, slashes)
+    # 'top'   = drawn after entities (projectiles, particles, text — default)
+    LAYER = 'top'
     def update(self, dt): pass
     def draw(self, surface): pass
 
@@ -54,6 +72,7 @@ class ProjectileEffect(Effect):
 
 
 class SlashEffect(Effect):
+    LAYER = 'floor'
     def __init__(self, panels, color, duration):
         self.panels = panels  # list of (col, row)
         self.color = color
@@ -68,19 +87,16 @@ class SlashEffect(Effect):
 
     def draw(self, surface):
         alpha = int(255 * (self.timer / self.duration))
+        r, g, b = self.color
         for col, row in self.panels:
             if 0 <= col < C.GRID_COLS and 0 <= row < C.GRID_ROWS:
-                rx = C.GRID_X + col * C.PANEL_W + 4
-                ry = C.GRID_Y + row * C.PANEL_H + 4
-                rw = C.PANEL_W - 8
-                rh = C.PANEL_H - 8
-                s = pygame.Surface((rw, rh), pygame.SRCALPHA)
-                r, g, b = self.color
-                s.fill((r, g, b, min(alpha, 180)))
-                surface.blit(s, (rx, ry))
-                # Slash line diagonal
-                pygame.draw.line(surface, self.color, (rx, ry + rh), (rx + rw, ry), 3)
-                pygame.draw.line(surface, self.color, (rx, ry), (rx + rw, ry + rh), 2)
+                poly = _tile_poly(col, row, shrink=3)
+                overlay = pygame.Surface((C.SCREEN_W, C.SCREEN_H), pygame.SRCALPHA)
+                pygame.draw.polygon(overlay, (r, g, b, min(alpha, 180)), poly)
+                surface.blit(overlay, (0, 0))
+                # Slash diagonals across the warped tile
+                pygame.draw.line(surface, self.color, poly[3], poly[1], 3)
+                pygame.draw.line(surface, self.color, poly[0], poly[2], 2)
 
 
 class ExplosionEffect(Effect):
@@ -350,36 +366,75 @@ class ScreenFlash(Effect):
 # ── Panel flash ───────────────────────────────────────────────────────────────
 
 class PanelFlash(Effect):
-    """Yellow (or custom color) panel highlight — shows AoE path as attack passes."""
+    LAYER = 'floor'
+    """Panel highlight — shows AoE path as attack passes.
 
-    def __init__(self, panels, color=(255, 215, 40), duration=0.38):
-        self.panels   = panels   # list of (col, row)
-        self.color    = color
-        self.duration = duration
-        self.timer    = duration
-        self.alive    = True
+    Two modes:
+      - Static (wave_speed=None): entire path flashes and fades uniformly.
+      - Shockwave (wave_speed=N tiles/sec): only the currently-active tile lights up,
+        with a brief fade trail. The effect dies once the wave has cleared the path.
+    """
+
+    def __init__(self, panels, color=(255, 215, 40), duration=0.38, wave_speed=None):
+        self.panels    = panels   # list of (col, row), order = travel direction
+        self.color     = color
+        self.duration  = duration
+        self.wave_speed = wave_speed   # tiles per second
+        self.timer     = duration
+        self.elapsed   = 0.0
+        self.alive     = True
 
     def update(self, dt):
-        self.timer -= dt
-        if self.timer <= 0:
-            self.alive = False
+        self.elapsed += dt
+        if self.wave_speed is not None:
+            # Lifetime = time for wave to clear path + short fade tail
+            total = len(self.panels) / max(0.1, self.wave_speed) + 0.35
+            if self.elapsed >= total:
+                self.alive = False
+        else:
+            self.timer -= dt
+            if self.timer <= 0:
+                self.alive = False
 
     def draw(self, surface):
-        frac  = self.timer / self.duration
-        alpha = int(190 * frac)
         r, g, b = self.color
-        for col, row in self.panels:
-            if 0 <= col < C.GRID_COLS and 0 <= row < C.GRID_ROWS:
-                rx = C.GRID_X + col * C.PANEL_W + 2
-                ry = C.GRID_Y + row * C.PANEL_H + 2
-                rw = C.PANEL_W - 4
-                rh = C.PANEL_H - 4
-                s = pygame.Surface((rw, rh), pygame.SRCALPHA)
-                s.fill((r, g, b, alpha))
-                surface.blit(s, (rx, ry))
-                # Bright inner edge
-                pygame.draw.rect(surface, (min(255, r + 40), min(255, g + 40), b),
-                                 pygame.Rect(rx, ry, rw, rh), 1)
+        edge_col = (min(255, r + 40), min(255, g + 40), b)
+
+        if self.wave_speed is None:
+            # Static whole-path flash
+            frac  = max(0.0, self.timer / self.duration)
+            alpha = int(190 * frac)
+            for col, row in self.panels:
+                if 0 <= col < C.GRID_COLS and 0 <= row < C.GRID_ROWS:
+                    poly = _tile_poly(col, row, shrink=2)
+                    overlay = pygame.Surface((C.SCREEN_W, C.SCREEN_H), pygame.SRCALPHA)
+                    pygame.draw.polygon(overlay, (r, g, b, alpha), poly)
+                    surface.blit(overlay, (0, 0))
+                    pygame.draw.polygon(surface, edge_col, poly, 1)
+            return
+
+        # Shockwave mode — peak brightness travels along the path
+        head = self.elapsed * self.wave_speed
+        for i, (col, row) in enumerate(self.panels):
+            if not (0 <= col < C.GRID_COLS and 0 <= row < C.GRID_ROWS):
+                continue
+            age = head - i               # >0: already passed, <0: not yet reached
+            if age < -0.15 or age > 1.4:
+                continue
+            if age < 0:
+                # Anticipation glow just ahead of the wavefront
+                alpha = int(70 * (1.0 + age / 0.15))
+            else:
+                # Active tile + fading trail
+                alpha = int(220 * max(0.0, 1.0 - age / 1.4))
+            if alpha <= 0:
+                continue
+            poly = _tile_poly(col, row, shrink=2)
+            overlay = pygame.Surface((C.SCREEN_W, C.SCREEN_H), pygame.SRCALPHA)
+            pygame.draw.polygon(overlay, (r, g, b, alpha), poly)
+            surface.blit(overlay, (0, 0))
+            if alpha > 80:
+                pygame.draw.polygon(surface, edge_col, poly, 1)
 
 
 # ── Particle burst ────────────────────────────────────────────────────────────
@@ -428,10 +483,15 @@ class ParticleBurst(Effect):
 # ── Spinning card projectile ─────────────────────────────────────────────────
 
 class CardProjectileEffect(Effect):
-    """Oden's buster: a card spinning through the air with a golden comet trail."""
+    """Oden's buster: a spinning card with a golden comet trail and magic sparkles.
+
+    If `target` is given, damage is applied on impact (pending_damage pattern,
+    same as TravelingHit) — caller does NOT call take_damage upfront.
+    """
     CW, CH = 22, 32
 
-    def __init__(self, start, end, charged=False):
+    def __init__(self, start, end, charged=False,
+                 target=None, damage=0, element=0):
         self.pos          = list(start)
         self.end          = list(end)
         self.charged      = charged
@@ -441,11 +501,23 @@ class CardProjectileEffect(Effect):
         dx = end[0] - start[0]
         dy = end[1] - start[1]
         dist = max(1, math.hypot(dx, dy))
-        speed = 560 if not charged else 480
+        speed = 1700 if not charged else 1400
         self.vel          = [dx / dist * speed, dy / dist * speed]
+        # Perpendicular direction — used to scatter sparkles sideways
+        d = max(1.0, math.hypot(*self.vel))
+        self._perp = (-self.vel[1] / d, self.vel[0] / d)
         self.dist_total   = dist
         self.dist_traveled = 0
         self._card        = self._build_card()
+        self.target       = target
+        self.damage       = damage
+        self.element      = element
+        self.pending_damage = None   # (dealt, entity) — picked up by Battle._update_effects
+
+        # Magic sparkles: each particle = [x, y, vx, vy, life_remaining, life_total, kind]
+        # kind: 0 = round dot, 1 = 4-point star, 2 = small streak
+        self.sparkles = []
+        self._spark_t = 0.0   # spawn cooldown
 
     def _build_card(self):
         surf = pygame.Surface((self.CW, self.CH), pygame.SRCALPHA)
@@ -473,7 +545,35 @@ class CardProjectileEffect(Effect):
         self.pos[0] += move[0]
         self.pos[1] += move[1]
         self.dist_traveled += math.hypot(*move)
+
+        # Spawn magic sparkles along the trail
+        self._spark_t -= dt
+        while self._spark_t <= 0:
+            self._spark_t += 0.012   # ~80 spawns/sec while in flight
+            perp_off  = random.uniform(-9, 9)
+            spawn_x   = self.pos[0] + self._perp[0] * perp_off
+            spawn_y   = self.pos[1] + self._perp[1] * perp_off
+            # Sparkle drifts mostly opposite of travel direction (backward), with sideways jitter
+            back_speed = random.uniform(40, 130)
+            jitter     = random.uniform(-50, 50)
+            svx = -self.vel[0] / max(1.0, math.hypot(*self.vel)) * back_speed + self._perp[0] * jitter
+            svy = -self.vel[1] / max(1.0, math.hypot(*self.vel)) * back_speed + self._perp[1] * jitter
+            life = random.uniform(0.30, 0.55)
+            kind = random.choices([0, 1, 2], weights=[6, 3, 2])[0]
+            self.sparkles.append([spawn_x, spawn_y, svx, svy, life, life, kind])
+
+        # Age sparkles
+        for s in self.sparkles:
+            s[0] += s[2] * dt
+            s[1] += s[3] * dt
+            s[4] -= dt
+        self.sparkles = [s for s in self.sparkles if s[4] > 0]
+
         if self.dist_traveled >= self.dist_total - 2:
+            if self.target is not None and self.target.alive and self.damage > 0:
+                dealt = self.target.take_damage(self.damage, self.element)
+                if dealt:
+                    self.pending_damage = (dealt, self.target)
             self.alive = False
 
     def draw(self, surface):
@@ -483,6 +583,45 @@ class CardProjectileEffect(Effect):
             r_t  = max(1, int(6 * frac))
             c    = tuple(int(ch * frac * 0.65) for ch in trail_col)
             pygame.draw.circle(surface, c, (int(tp[0]), int(tp[1])), r_t)
+
+        # Magic sparkles
+        if self.charged:
+            sparkle_palette = [(220, 180, 255), (160, 110, 255), (240, 230, 255), (120, 80, 230)]
+        else:
+            sparkle_palette = [(255, 230, 130), (255, 200, 80), (255, 250, 200), (200, 140, 50)]
+        for sx, sy, _, _, life, life_max, kind in self.sparkles:
+            frac  = life / life_max
+            alpha = int(255 * (frac ** 0.6))
+            base  = sparkle_palette[int((1 - frac) * len(sparkle_palette)) % len(sparkle_palette)]
+            col   = (*base, alpha)
+            ix, iy = int(sx), int(sy)
+            if kind == 0:
+                # Soft dot — small surface for alpha blending
+                r = max(1, int(2 + 1.5 * frac))
+                s = pygame.Surface((r * 2 + 2, r * 2 + 2), pygame.SRCALPHA)
+                pygame.draw.circle(s, col, (r + 1, r + 1), r)
+                surface.blit(s, (ix - r - 1, iy - r - 1))
+            elif kind == 1:
+                # 4-point star
+                size = max(2, int(3 + 3 * frac))
+                s = pygame.Surface((size * 2 + 2, size * 2 + 2), pygame.SRCALPHA)
+                cx, cy = size + 1, size + 1
+                pygame.draw.line(s, col, (cx - size, cy), (cx + size, cy), 1)
+                pygame.draw.line(s, col, (cx, cy - size), (cx, cy + size), 1)
+                pygame.draw.circle(s, col, (cx, cy), 1)
+                surface.blit(s, (ix - size - 1, iy - size - 1))
+            else:
+                # Small streak — short line along travel direction (perpendicular to perp)
+                length = int(3 + 4 * frac)
+                tx = ix - int(self.vel[0] / max(1.0, math.hypot(*self.vel)) * length)
+                ty = iy - int(self.vel[1] / max(1.0, math.hypot(*self.vel)) * length)
+                bb_w = abs(ix - tx) + 4
+                bb_h = abs(iy - ty) + 4
+                s = pygame.Surface((bb_w, bb_h), pygame.SRCALPHA)
+                ox, oy = min(ix, tx) - 2, min(iy, ty) - 2
+                pygame.draw.line(s, col, (ix - ox, iy - oy), (tx - ox, ty - oy), 2)
+                surface.blit(s, (ox, oy))
+
         rotated = pygame.transform.rotate(self._card, self.angle)
         rw, rh  = rotated.get_size()
         surface.blit(rotated, (int(self.pos[0]) - rw // 2, int(self.pos[1]) - rh // 2))
@@ -494,11 +633,13 @@ class MagicCircleEffect(Effect):
     """Rotating elemental summoning circle — appears under target, expands, then collapses."""
 
     _CFG = {
-        C.ELEM_FIRE: {'color': (255, 100, 30),  'sides': 5, 'ticks': 10},
-        C.ELEM_AQUA: {'color': (50,  180, 255), 'sides': 6, 'ticks': 12},
-        C.ELEM_ELEC: {'color': (255, 230, 50),  'sides': 4, 'ticks': 8},
-        C.ELEM_WOOD: {'color': (60,  220, 80),  'sides': 6, 'ticks': 12},
-        C.ELEM_NONE: {'color': (180, 150, 255), 'sides': 5, 'ticks': 10},
+        C.ELEM_FIRE:      {'color': (255, 100, 30),  'sides': 5, 'ticks': 10},
+        C.ELEM_ICE:       {'color': (50,  180, 255), 'sides': 6, 'ticks': 12},
+        C.ELEM_LIGHTNING: {'color': (255, 230, 50),  'sides': 4, 'ticks': 8},
+        C.ELEM_EARTH:     {'color': (60,  220, 80),  'sides': 6, 'ticks': 12},
+        C.ELEM_LIGHT:     {'color': (255, 240, 180), 'sides': 8, 'ticks': 10},
+        C.ELEM_DARK:      {'color': (160,  60, 220), 'sides': 5, 'ticks': 10},
+        C.ELEM_NONE:      {'color': (180, 150, 255), 'sides': 5, 'ticks': 10},
     }
 
     def __init__(self, pos, element=C.ELEM_NONE, duration=0.85):
@@ -611,7 +752,8 @@ class TravelingHit(Effect):
         color     : (r,g,b)
         radius    : int
         """
-        self.y       = float(C.GRID_Y + row * C.PANEL_H + C.PANEL_H // 2)
+        import tile_warp
+        self.y       = float(tile_warp.row_center_y(row))
         self.x       = float(src_px[0])
         self.row     = row
         self.col_end = col_end
@@ -631,7 +773,8 @@ class TravelingHit(Effect):
     # -- internal -------------------------------------------------------
 
     def _cur_col(self):
-        return int((self.x - C.GRID_X) / C.PANEL_W)
+        import tile_warp
+        return tile_warp.col_at_x_in_row(self.x, self.row)
 
     # -- Effect interface -----------------------------------------------
 

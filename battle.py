@@ -9,13 +9,14 @@ import sprite_manager as SM
 from chips import CHIP_EFFECTS, make_sample_folder
 from custom_screen import CustomScreen
 import effects as FX
+import tile_warp
+import sfx
+from music import music as _music, track_path
 
 
 def _panel_center(col, row):
-    return (
-        C.GRID_X + col * C.PANEL_W + C.PANEL_W // 2,
-        C.GRID_Y + row * C.PANEL_H + C.PANEL_H // 2,
-    )
+    """Center of tile (col, row) — used as VFX source/target."""
+    return tile_warp.tile_center(col, row)
 
 
 def _draw_chip_icon(surface, chip, cx, cy, size=14):
@@ -53,11 +54,25 @@ class Battle:
     def __init__(self, screen, folder=None):
         self.screen = screen
         self.state = BattleState.OPENING
-        self.opening_timer = 1.2
+        self.opening_timer = 2.2     # length of intro title-card sequence
+        self._opening_elapsed = 0.0  # 0 → opening_timer (for animation)
+
+        # Intro SFX schedule — one shuffle, then 6 deal sounds with organic spacing.
+        # (Times are seconds into the opening; played from update() during OPENING.)
+        self._sfx_events = [(0.05, 'shuffle', 0.85)]
+        deal_t = 0.50
+        for _ in range(6):
+            self._sfx_events.append((deal_t, 'deal', 0.65))
+            deal_t += random.uniform(0.10, 0.16)
+        self._sfx_idx = 0
 
         # Outcome flags — read by game.py to decide next state
-        self.finished   = False
-        self.player_won = False
+        self.finished    = False
+        self.player_won  = False
+        self.next_action = None   # 'restart' | 'overworld' — set when player chooses
+
+        # Fanfare follow-up after victory SFX (None = not pending, >0 = countdown)
+        self._fanfare_timer = None
 
         # Grid
         self.grid = Grid()
@@ -105,8 +120,9 @@ class Battle:
         # Background
         self.bg_timer = 0.0
 
-        # Kick off with custom screen
-        self._open_custom_screen()
+        # Battle starts in OPENING state — the SHUFFLE / DEAL / DRAW! title
+        # sequence runs over `opening_timer` seconds while the battlefield is
+        # visible behind it. When the timer expires, custom screen opens.
 
     # ──────────────────────────────────────────────────────────────────────────
     # Custom screen helpers
@@ -146,14 +162,20 @@ class Battle:
     def handle_event(self, event):
         if self.state == BattleState.CUSTOM:
             self.custom_screen_obj.handle_event(event)
-            if self.custom_screen_obj.done:
-                self._close_custom_screen()
+            # _close_custom_screen is now driven by update() once the slide-out
+            # finishes; no need to check done here.
             return
 
         if self.state == BattleState.VICTORY or self.state == BattleState.DEFEAT:
-            if event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_z):
-                self.player_won = self.state == BattleState.VICTORY
-                self.finished   = True
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_z:
+                    self.player_won  = self.state == BattleState.VICTORY
+                    self.next_action = 'restart'
+                    self.finished    = True
+                elif event.key == pygame.K_x:
+                    self.player_won  = self.state == BattleState.VICTORY
+                    self.next_action = 'overworld'
+                    self.finished    = True
             return
 
         if self.state != BattleState.BATTLE:
@@ -167,42 +189,41 @@ class Battle:
                 if self.custom_gauge >= 1.0:
                     self._open_custom_screen()
 
-            # Use chip / buster
+            # Use a queued card (no buster fallback — buster lives on X)
             elif event.key == pygame.K_z:
                 if self.chip_lock_timer <= 0:
-                    self._use_chip_or_buster()
+                    self._use_chip()
 
         elif event.type == pygame.KEYUP:
             self._keys_down.discard(event.key)
-            # Release X → fire charged if charged enough
+            # Release X → fire buster.  Held past CHARGE_TIME → charged shot,
+            # otherwise a quick tap fires the uncharged buster.
             if event.key == pygame.K_x:
-                if self.player.charge_held >= C.CHARGE_TIME and self.player.buster_cooldown <= 0:
-                    self._fire_buster(charged=True)
+                if self.player.buster_cooldown <= 0:
+                    charged = self.player.charge_held >= C.CHARGE_TIME
+                    self._fire_buster(charged=charged)
                 self.player.charge_held = 0.0
 
     # ──────────────────────────────────────────────────────────────────────────
     # Gameplay actions
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _use_chip_or_buster(self):
-        if self.current_chip_idx < len(self.chip_queue):
-            chip = self.chip_queue[self.current_chip_idx]
-            self.current_chip_idx += 1
-            resolver = CHIP_EFFECTS.get(chip.effect_key)
-            if resolver:
-                resolver(chip, self.player, self.grid, self.enemies, self.effects)
-            # Magic circle on nearest enemy in player's row (or any enemy)
-            targets_row = [e for e in self.enemies if e.row == self.player.row and e.alive]
-            target = targets_row[0] if targets_row else (self.enemies[0] if self.enemies else None)
-            if target and target.alive:
-                self.effects.insert(0, FX.MagicCircleEffect(
-                    target.pixel_center(), chip.element))
-            self._post_chip_damage_numbers()
-            self.chip_lock_timer = C.CHIP_LOCK_TIME
-        else:
-            # Buster shot
-            if self.player.buster_cooldown <= 0:
-                self._fire_buster(charged=False)
+    def _use_chip(self):
+        """Z: fire the next queued card. No fallback to buster — buster is on X."""
+        if self.current_chip_idx >= len(self.chip_queue):
+            return
+        chip = self.chip_queue[self.current_chip_idx]
+        self.current_chip_idx += 1
+        resolver = CHIP_EFFECTS.get(chip.effect_key)
+        if resolver:
+            resolver(chip, self.player, self.grid, self.enemies, self.effects)
+        targets_row = [e for e in self.enemies if e.row == self.player.row and e.alive]
+        target = targets_row[0] if targets_row else (self.enemies[0] if self.enemies else None)
+        if target and target.alive:
+            self.effects.insert(0, FX.MagicCircleEffect(
+                target.pixel_center(), chip.element))
+        self._post_chip_damage_numbers()
+        self.chip_lock_timer = C.CHIP_LOCK_TIME
 
     def _fire_buster(self, charged=False):
         dmg = C.CHARGED_DMG if charged else C.BUSTER_DMG
@@ -213,29 +234,34 @@ class Battle:
             self.player.charge_held = 0.0
             self.effects.append(FX.ScreenFlash(C.LIGHT_BLUE, 0.08))
 
-        hit = False
+        # Find first enemy in the row from player forward (target for deferred damage)
+        target = None
         hit_col = C.GRID_COLS - 1
         for col in range(self.player.col + 1, C.GRID_COLS):
-            targets = [e for e in self.enemies if e.col == col and e.row == row and e.alive]
-            if targets:
-                dealt = targets[0].take_damage(dmg, C.ELEM_NONE)
-                if dealt:
-                    self.effects.append(FX.DamageNumber(targets[0].pixel_center(), dealt, C.WHITE))
+            candidates = [e for e in self.enemies if e.col == col and e.row == row and e.alive]
+            if candidates:
+                target = candidates[0]
                 hit_col = col
-                hit = True
                 break
 
-        # Panel highlight along the shot path
+        # Shockwave panel highlight along the shot path
         path = [(c, row) for c in range(self.player.col + 1, hit_col + 1)]
         if path:
-            self.effects.insert(0, FX.PanelFlash(path))
+            # Card travels at ~1700 px/s; tile avg width ~112px → ~15 tiles/sec
+            self.effects.insert(0, FX.PanelFlash(path, wave_speed=15.0))
 
-        # Spinning card projectile
+        # Spinning card projectile — damage applied on impact
         src = _panel_center(self.player.col, row)
         dst = _panel_center(hit_col, row)
-        self.effects.append(FX.CardProjectileEffect(src, dst, charged=charged))
+        self.effects.append(FX.CardProjectileEffect(
+            src, dst, charged=charged,
+            target=target, damage=dmg, element=C.ELEM_NONE,
+        ))
 
-        # Impact burst at landing point
+        # Impact burst at landing point — keep the visual but pull it slightly later
+        # so it lands when the card arrives. Burst is a particle effect that lives
+        # for its own duration; spawning it now means it appears at the destination
+        # immediately, which still reads as anticipation. Acceptable for now.
         burst_col = (C.LIGHT_BLUE if charged else C.CYAN,
                      (200, 220, 255) if charged else (180, 240, 255))
         self.effects.append(FX.ParticleBurst(
@@ -271,17 +297,35 @@ class Battle:
 
         if self.state == BattleState.OPENING:
             self.opening_timer -= dt
+            self._opening_elapsed += dt
+            # Drain any due SFX events
+            while self._sfx_idx < len(self._sfx_events):
+                when, name, vol = self._sfx_events[self._sfx_idx]
+                if self._opening_elapsed >= when:
+                    sfx.play(name, vol)
+                    self._sfx_idx += 1
+                else:
+                    break
             if self.opening_timer <= 0:
                 self.state = BattleState.CUSTOM
                 self._open_custom_screen()
             return
 
         if self.state == BattleState.CUSTOM:
-            # Custom screen handles its own input
+            # Tick the slide animation and close once the slide-out finishes
+            if self.custom_screen_obj is not None:
+                self.custom_screen_obj.update(dt)
+                if self.custom_screen_obj.done:
+                    self._close_custom_screen()
             return
 
         if self.state in (BattleState.VICTORY, BattleState.DEFEAT):
             self._update_effects(dt)
+            if self._fanfare_timer is not None:
+                self._fanfare_timer -= dt
+                if self._fanfare_timer <= 0:
+                    _music.play(track_path('fanfare'), volume=0.8, loop=False)
+                    self._fanfare_timer = None
             return
 
         if self.state != BattleState.BATTLE:
@@ -343,6 +387,11 @@ class Battle:
         if not any(e.alive for e in self.enemies):
             self.state = BattleState.VICTORY
             self.effects.append(FX.ScreenFlash(C.WHITE, 0.3))
+            sfx.play('victory', 0.9)
+            # Cut battle music immediately so the victory chime lands in silence,
+            # then the fanfare kicks in after a brief beat.
+            _music.stop()
+            self._fanfare_timer = 0.7
         if not self.player.alive:
             self.state = BattleState.DEFEAT
             self.effects.append(FX.ScreenFlash(C.RED, 0.5))
@@ -415,6 +464,12 @@ class Battle:
             pass
         self.grid.draw(surface, highlight)
 
+        # Floor effects (panel highlights, slash overlays) — drawn on the tiles
+        # but UNDER the entity sprites
+        for eff in self.effects:
+            if getattr(eff, 'LAYER', 'top') == 'floor':
+                eff.draw(surface)
+
         # Entities
         if self.player.alive or self.state != BattleState.DEFEAT:
             self.player.draw(surface)
@@ -422,9 +477,10 @@ class Battle:
             if e.alive:
                 e.draw(surface)
 
-        # Effects
+        # Top effects (projectiles, particles, text)
         for eff in self.effects:
-            eff.draw(surface)
+            if getattr(eff, 'LAYER', 'top') != 'floor':
+                eff.draw(surface)
 
         # HUD
         self._draw_hud(surface)
@@ -434,30 +490,29 @@ class Battle:
             self.custom_screen_obj.draw(surface)
 
         elif self.state == BattleState.VICTORY:
-            self._draw_end_screen(surface, "VIRUS BUSTED!", C.CYAN)
+            self._draw_victory_screen(surface)
 
         elif self.state == BattleState.DEFEAT:
-            self._draw_end_screen(surface, "JACKED OUT...", C.RED)
+            self._draw_end_screen(surface, "Defeated", C.RED, victory=False)
 
         elif self.state == BattleState.OPENING:
             self._draw_opening(surface)
 
+    # Battlefield to use for this battle (cycled via assets/battlefields/*)
+    BATTLEFIELD = 'forest'   # 'forest' | 'crystalcave' | 'temple'
+
     def _draw_background(self, surface):
-        surface.fill(C.HUD_BG)
-        # Slow-moving star field
-        t = self.bg_timer
-        rng = __import__('random').Random(42)
-        for _ in range(60):
-            sx = rng.randint(0, C.SCREEN_W - 1)
-            sy = rng.randint(0, C.SCREEN_H - 1)
-            phase = rng.random() * 6.28
-            bright = int(80 + 60 * math.sin(t * 1.4 + phase))
-            pygame.draw.rect(surface, (bright, bright, bright + 20), (sx, sy, 1, 1))
-        # Subtle horizontal scan lines
-        for y in range(0, C.SCREEN_H, 3):
-            s = pygame.Surface((C.SCREEN_W, 1), pygame.SRCALPHA)
-            s.fill((0, 0, 30, 35))
-            surface.blit(s, (0, y))
+        # Layer 1: battlefield background
+        bg = SM.get(f'bf_bg_{self.BATTLEFIELD}')
+        if bg:
+            surface.blit(bg, (0, 0))
+        else:
+            surface.fill(C.HUD_BG)
+
+        # Layer 2: stone platform frame (sits between bg and tiles)
+        plat = SM.get('bf_platform')
+        if plat:
+            surface.blit(plat, (0, 0))
 
     # ── Decorative helpers ────────────────────────────────────────────────────
 
@@ -487,67 +542,162 @@ class Battle:
     _INFO_BOTTOM = _PAD + _PORTRAIT + 10   # y where player info ends → separator
 
     def _draw_hud(self, surface):
-        # ── Left panel (full height) ──────────────────────────────────────────
-        pygame.draw.rect(surface, C.UI_NAVY, pygame.Rect(0, 0, C.CARD_PANEL_W, C.SCREEN_H))
-        pygame.draw.line(surface, C.UI_DARK_GOLD,
-                         (C.CARD_PANEL_W, 0), (C.CARD_PANEL_W, C.SCREEN_H), 1)
-        pygame.draw.line(surface, C.UI_GOLD,
-                         (C.CARD_PANEL_W - 1, 0), (C.CARD_PANEL_W - 1, C.SCREEN_H), 1)
+        """Floating-widgets-only HUD. The HP widget stays visible during the
+        custom screen (player needs to see their HP while picking cards).
+        Victory/defeat/opening overlays own the screen themselves."""
+        if self.state in (BattleState.VICTORY, BattleState.DEFEAT, BattleState.OPENING):
+            return
 
-        # ── Player portrait ───────────────────────────────────────────────────
-        p_rect = pygame.Rect(self._PAD, self._PAD, self._PORTRAIT, self._PORTRAIT)
-        pygame.draw.rect(surface, (16, 12, 40), p_rect, border_radius=4)
-        pygame.draw.rect(surface, C.UI_GOLD, p_rect, 2, border_radius=4)
+        # HP widget always visible during play (CUSTOM screen leaves its top
+        # area clear so the widget shows through unobstructed).
+        self._draw_hp_widget(surface)
+
+        if self.state == BattleState.CUSTOM:
+            return
+
+        self._draw_gauge_widget(surface)
+        if self.state in (BattleState.BATTLE, BattleState.CHIP_USE):
+            self._draw_card_queue_widget(surface)
+
+    # ── Floating widgets ──────────────────────────────────────────────────────
+
+    def _draw_hp_widget(self, surface):
+        """Top-left HP widget: portrait + name + HP bar."""
+        pad = 12
+        x, y = pad, pad
+        portrait = 52
+        bar_w = 180
+        bar_h = 12
+        widget_w = portrait + 8 + bar_w + 10
+        widget_h = portrait + 8
+
+        panel = pygame.Surface((widget_w, widget_h), pygame.SRCALPHA)
+        panel.fill((6, 10, 30, 215))
+        pygame.draw.rect(panel, C.UI_DARK_GOLD, panel.get_rect(), 2, border_radius=4)
+        pygame.draw.rect(panel, C.UI_GOLD,      panel.get_rect(), 1, border_radius=4)
+        surface.blit(panel, (x, y))
+
+        # Portrait
         face = SM.get('oden_face')
+        if face is None:
+            face = SM.get('oden_idle')
+            if isinstance(face, list):
+                face = face[0]
         if face:
-            p_scaled = pygame.transform.scale(face, (self._PORTRAIT, self._PORTRAIT))
-            surface.blit(p_scaled, (self._PAD, self._PAD))
+            p_scaled = pygame.transform.scale(face, (portrait, portrait))
+            surface.blit(p_scaled, (x + 4, y + 4))
         else:
-            p_surf = SM.get('oden_idle')
-            if p_surf:
-                if isinstance(p_surf, list):
-                    p_surf = p_surf[0]
-                p_scaled = pygame.transform.scale(p_surf, (self._PORTRAIT, self._PORTRAIT))
-                surface.blit(p_scaled, (self._PAD, self._PAD))
+            pygame.draw.rect(surface, (40, 40, 60),
+                             pygame.Rect(x + 4, y + 4, portrait, portrait))
 
-        # Name + HP + gauge (right of portrait)
-        ix = self._PAD + self._PORTRAIT + 6
-        iw = C.CARD_PANEL_W - ix - self._PAD
-        surface.blit(fonts.serif(15, bold=True).render("Oden", True, C.UI_GOLD),
-                     (ix, self._PAD + 2))
-        self._draw_hp_bar(surface, "HP", self.player.hp, self.player.max_hp,
-                          ix, self._PAD + 22, iw, 24, bar_offset=12, font_size=8)
-        self._draw_gauge_inline(surface, ix, self._PAD + 52, iw)
+        # Name + HP bar
+        info_x = x + 4 + portrait + 8
+        info_y = y + 4
+        surface.blit(fonts.serif(13, bold=True).render("Oden", True, C.UI_GOLD),
+                     (info_x, info_y))
+        # HP bar
+        bar_y = info_y + 20
+        bg = pygame.Rect(info_x, bar_y, bar_w, bar_h)
+        pygame.draw.rect(surface, (18, 18, 36), bg)
+        frac = max(0.0, self.player.hp / self.player.max_hp)
+        fill_w = int(bar_w * frac)
+        col = C.HP_GREEN if frac > 0.5 else (C.HP_YELLOW if frac > 0.25 else C.HP_RED)
+        if fill_w > 0:
+            pygame.draw.rect(surface, col, pygame.Rect(info_x, bar_y, fill_w, bar_h))
+        pygame.draw.rect(surface, C.UI_DARK_GOLD, bg, 1)
+        # HP text
+        hp_text = f"{self.player.hp}/{self.player.max_hp}"
+        ts = fonts.pixel(8, bold=True).render(hp_text, True, C.WHITE)
+        surface.blit(ts, (info_x + bar_w - ts.get_width() - 3, bar_y + 1))
 
-        # Separator below info
-        sy = self._INFO_BOTTOM
-        self._draw_gold_rule(surface, sy)
+    def _draw_gauge_widget(self, surface):
+        """Centered custom-gauge widget along the top of the screen."""
+        gauge_w = 360
+        gauge_h = 14
+        pad = 6
+        widget_w = gauge_w + pad * 2
+        widget_h = gauge_h + 22
+        x = (C.SCREEN_W - widget_w) // 2
+        y = 14
 
-        # ── Chip queue / active card ──────────────────────────────────────────
-        if self.state == BattleState.BATTLE or self.state == BattleState.CHIP_USE:
-            self._draw_chip_queue(surface, sy + 8)
+        panel = pygame.Surface((widget_w, widget_h), pygame.SRCALPHA)
+        panel.fill((6, 10, 30, 215))
+        pygame.draw.rect(panel, C.UI_DARK_GOLD, panel.get_rect(), 2, border_radius=4)
+        pygame.draw.rect(panel, C.UI_GOLD,      panel.get_rect(), 1, border_radius=4)
+        surface.blit(panel, (x, y))
 
-        if self.state == BattleState.BATTLE:
-            self._draw_controls_hint(surface)
+        lbl = fonts.serif(10, bold=True).render("CUSTOM GAUGE", True, C.UI_GOLD)
+        surface.blit(lbl, (x + (widget_w - lbl.get_width()) // 2, y + 3))
 
-        # ── Right area: portrait strip (y=0 to GRID_Y) ───────────────────────
-        rx = C.CARD_PANEL_W + 2
-        pygame.draw.rect(surface, C.UI_NAVY,
-                         pygame.Rect(rx, 0, C.SCREEN_W - rx, C.GRID_Y))
-        pygame.draw.line(surface, C.UI_GOLD,
-                         (rx, C.GRID_Y - 1), (C.SCREEN_W, C.GRID_Y - 1), 1)
-        pygame.draw.line(surface, C.UI_DARK_GOLD,
-                         (rx, C.GRID_Y), (C.SCREEN_W, C.GRID_Y), 1)
-        self._draw_portrait_strip(surface, rx)
+        gx, gy = x + pad, y + 18
+        bg = pygame.Rect(gx, gy, gauge_w, gauge_h)
+        pygame.draw.rect(surface, (18, 18, 36), bg)
+        fw = int(gauge_w * self.custom_gauge)
+        if fw > 0:
+            col = C.WHITE if (self.custom_gauge >= 1.0 and int(self.gauge_flash * 8) % 2 == 0) \
+                  else (90, 150, 240)
+            pygame.draw.rect(surface, col, pygame.Rect(gx, gy, fw, gauge_h))
+        pygame.draw.rect(surface, C.UI_DARK_GOLD, bg, 1)
+        if self.custom_gauge >= 1.0:
+            press = fonts.pixel(8, bold=True).render("SPACE", True, C.UI_GOLD)
+            surface.blit(press, (gx + gauge_w - press.get_width() - 4, gy - 1))
 
-        # ── Below-grid strip ─────────────────────────────────────────────────
-        bot_y = C.GRID_Y + C.GRID_ROWS * C.PANEL_H
-        if bot_y < C.SCREEN_H:
-            bot_rect = pygame.Rect(rx, bot_y, C.SCREEN_W - rx, C.SCREEN_H - bot_y)
-            pygame.draw.rect(surface, C.UI_NAVY, bot_rect)
-            pygame.draw.line(surface, C.UI_DARK_GOLD, (rx, bot_y), (C.SCREEN_W, bot_y), 1)
-            pygame.draw.line(surface, C.UI_GOLD,      (rx, bot_y + 1), (C.SCREEN_W, bot_y + 1), 1)
-            self._draw_battle_info(surface, rx, bot_y + 2)
+    def _draw_card_queue_widget(self, surface):
+        """Card queue floating at the bottom of the screen."""
+        remaining = self.chip_queue[self.current_chip_idx:]
+        if not remaining:
+            return
+
+        card_w = 64
+        card_h = 86
+        gap = 6
+        n = min(len(remaining), 7)
+        total_w = n * card_w + (n - 1) * gap
+        x0 = (C.SCREEN_W - total_w) // 2
+        y0 = C.SCREEN_H - card_h - 22
+
+        # Backing panel — softer alpha so it floats over the platform
+        pad = 10
+        panel_rect = pygame.Rect(x0 - pad, y0 - pad, total_w + pad * 2, card_h + pad * 2)
+        panel = pygame.Surface(panel_rect.size, pygame.SRCALPHA)
+        panel.fill((6, 10, 30, 170))
+        pygame.draw.rect(panel, C.UI_DARK_GOLD, panel.get_rect(), 2, border_radius=5)
+        pygame.draw.rect(panel, C.UI_GOLD,      panel.get_rect(), 1, border_radius=5)
+        surface.blit(panel, panel_rect.topleft)
+
+        for i, chip in enumerate(remaining[:n]):
+            x = x0 + i * (card_w + gap)
+            is_active = (i == 0)
+            self._draw_small_card(surface, chip, x, y0, card_w, card_h, active=is_active)
+
+    def _draw_small_card(self, surface, chip, x, y, w, h, active=False):
+        eb = self._ELEM_BG.get(chip.element, (40, 36, 68))
+        if not active:
+            eb = tuple(max(0, c - 25) for c in eb)
+        pygame.draw.rect(surface, eb, pygame.Rect(x, y, w, h), border_radius=3)
+        pygame.draw.rect(surface, self._CLS_COLOR.get(chip.chip_class, C.WHITE),
+                         pygame.Rect(x, y, w, 3), border_radius=3)
+        # Name
+        nf = fonts.pixel(7, bold=True)
+        ns = nf.render(chip.name[:9], True, C.WHITE if active else (180, 175, 200))
+        surface.blit(ns, (x + (w - ns.get_width()) // 2, y + 6))
+        # Big damage/heal number
+        if chip.heals:
+            vs = fonts.serif(15, bold=True).render(f"+{chip.heals}", True,
+                                                    (80, 220, 80) if active else (60, 140, 60))
+        elif chip.damage:
+            vs = fonts.serif(15, bold=True).render(str(chip.damage), True,
+                                                    C.WHITE if active else (150, 150, 170))
+        else:
+            vs = fonts.pixel(8).render("util", True, (180, 175, 200))
+        surface.blit(vs, (x + (w - vs.get_width()) // 2, y + 20))
+        # Code letter bottom-right
+        cc = (C.CYAN if chip.code == "*" else C.UI_GOLD) if active else (90, 88, 110)
+        code_s = fonts.pixel(11, bold=True).render(chip.code, True, cc)
+        surface.blit(code_s, (x + w - code_s.get_width() - 4, y + h - code_s.get_height() - 3))
+        border_c = C.UI_GOLD if active else (60, 58, 80)
+        pygame.draw.rect(surface, border_c, pygame.Rect(x, y, w, h), 1 if not active else 2,
+                         border_radius=3)
 
     def _draw_hp_bar(self, surface, name, hp, max_hp, x, y, w, h,
                      dimmed=False, bar_offset=12, font_size=9, use_serif=False):
@@ -627,11 +777,13 @@ class Battle:
             surface.blit(hs, (right_start + gauge_w - hs.get_width(), gy_base))
 
     _ELEM_BG = {
-        C.ELEM_NONE: ( 40,  36,  68),
-        C.ELEM_FIRE: ( 80,  30,   8),
-        C.ELEM_AQUA: (  8,  44,  80),
-        C.ELEM_ELEC: ( 72,  64,   8),
-        C.ELEM_WOOD: ( 16,  64,  16),
+        C.ELEM_NONE:      ( 40,  36,  68),
+        C.ELEM_FIRE:      ( 80,  30,   8),
+        C.ELEM_ICE:       (  8,  44,  80),
+        C.ELEM_LIGHTNING: ( 72,  64,   8),
+        C.ELEM_EARTH:     ( 16,  64,  16),
+        C.ELEM_LIGHT:     ( 72,  60,  24),
+        C.ELEM_DARK:      ( 36,   8,  60),
     }
     _CLS_COLOR = {
         C.CLS_STANDARD: C.ORANGE,
@@ -757,28 +909,212 @@ class Battle:
                 surface.blit(ns, (er.x + 6, ey))
                 ey += 14
 
-    def _draw_end_screen(self, surface, message, color):
+    def _draw_end_screen(self, surface, message, color, victory=True):
+        """Simple text-only end screen used for defeat (and as a fallback)."""
         overlay = pygame.Surface((C.SCREEN_W, C.SCREEN_H), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 175))
         surface.blit(overlay, (0, 0))
 
-        font = fonts.pixel(26, bold=True)
+        font = fonts.serif(54, bold=True)
         text   = font.render(message, True, color)
         shadow = font.render(message, True, C.BLACK)
         cx = C.SCREEN_W // 2 - text.get_width() // 2
-        cy = C.SCREEN_H // 2 - text.get_height() // 2
+        cy = C.SCREEN_H // 2 - text.get_height() // 2 - 20
         surface.blit(shadow, (cx + 2, cy + 2))
         surface.blit(text,   (cx, cy))
 
-        sub_font = fonts.pixel(10)
-        sub = sub_font.render("Press Z to play again", True, C.WHITE)
-        surface.blit(sub, (C.SCREEN_W // 2 - sub.get_width() // 2, cy + 36))
+        self._draw_endscreen_prompt(surface, cy + text.get_height() + 30)
+
+    # ── Victory screen ────────────────────────────────────────────────────────
+
+    def _draw_victory_screen(self, surface):
+        """Ornate victory: dimmed battlefield + radial gold glow + Oden pose +
+        large serif 'Victory!' headline + gold ornament rules + Z/X prompt."""
+        # Soft dim — keep battlefield slightly visible behind
+        overlay = pygame.Surface((C.SCREEN_W, C.SCREEN_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 150))
+        surface.blit(overlay, (0, 0))
+
+        oden = SM.get('oden_victory')
+        oden_x = oden_y = None
+        if oden:
+            ow, oh = oden.get_size()
+            # Place on the right side so the headline has room on the left
+            oden_x = int(C.SCREEN_W * 0.62) - ow // 4
+            oden_y = (C.SCREEN_H - oh) // 2 + 20
+
+            # Radial gold glow behind him
+            self._draw_radial_glow(
+                surface,
+                cx=oden_x + ow // 2,
+                cy=oden_y + int(oh * 0.42),
+                radius=int(oh * 0.55),
+                color=(255, 215, 110),
+                max_alpha=130,
+            )
+
+            surface.blit(oden, (oden_x, oden_y))
+
+        # ── Headline ────────────────────────────────────────────────────────
+        headline_font = fonts.serif(86, bold=True)
+        head = headline_font.render("Victory!", True, C.UI_GOLD)
+        head_shadow = headline_font.render("Victory!", True, (40, 25, 4))
+
+        # Left-aligned next to Oden, or centered if no sprite
+        if oden:
+            hx = int(C.SCREEN_W * 0.10)
+        else:
+            hx = C.SCREEN_W // 2 - head.get_width() // 2
+        hy = int(C.SCREEN_H * 0.30)
+
+        surface.blit(head_shadow, (hx + 3, hy + 3))
+        surface.blit(head,        (hx, hy))
+
+        # Subtitle / flavor
+        sub_font = fonts.serif(20)
+        sub = sub_font.render("The cards favored you.", True, (220, 210, 180))
+        surface.blit(sub, (hx + 4, hy + head.get_height() + 4))
+
+        # Gold rule with diamond ornaments under the subtitle
+        rule_y = hy + head.get_height() + 38
+        rule_x0 = hx
+        rule_x1 = hx + max(head.get_width(), sub.get_width()) + 30
+        self._draw_gold_rule_range(surface, rule_x0, rule_x1, rule_y)
+
+        # ── Bottom prompt ───────────────────────────────────────────────────
+        self._draw_endscreen_prompt(surface, C.SCREEN_H - 60)
+
+    def _draw_endscreen_prompt(self, surface, y):
+        """Shared 'Z Fight again    X Overworld' bottom prompt."""
+        prompt_font = fonts.serif(15, bold=True)
+        key_box_font = fonts.serif(15, bold=True)
+
+        def key_chip(letter):
+            ks = key_box_font.render(letter, True, C.UI_GOLD)
+            pad_x, pad_y = 8, 3
+            w = ks.get_width() + pad_x * 2
+            h = ks.get_height() + pad_y * 2
+            chip = pygame.Surface((w, h), pygame.SRCALPHA)
+            pygame.draw.rect(chip, (12, 16, 40, 220), chip.get_rect(), border_radius=4)
+            pygame.draw.rect(chip, C.UI_GOLD,           chip.get_rect(), 1, border_radius=4)
+            chip.blit(ks, (pad_x, pad_y))
+            return chip
+
+        z_chip = key_chip("Z")
+        z_lbl  = prompt_font.render("Fight again", True, C.WHITE)
+        x_chip = key_chip("X")
+        x_lbl  = prompt_font.render("Overworld",   True, C.WHITE)
+
+        gap_inner = 8     # chip → label
+        gap_outer = 40    # between the two pairs
+
+        total_w = (z_chip.get_width() + gap_inner + z_lbl.get_width()
+                   + gap_outer +
+                   x_chip.get_width() + gap_inner + x_lbl.get_width())
+        sx = C.SCREEN_W // 2 - total_w // 2
+        ky = y
+
+        surface.blit(z_chip, (sx, ky))
+        surface.blit(z_lbl,  (sx + z_chip.get_width() + gap_inner,
+                              ky + (z_chip.get_height() - z_lbl.get_height()) // 2))
+        sx += z_chip.get_width() + gap_inner + z_lbl.get_width() + gap_outer
+        surface.blit(x_chip, (sx, ky))
+        surface.blit(x_lbl,  (sx + x_chip.get_width() + gap_inner,
+                              ky + (x_chip.get_height() - x_lbl.get_height()) // 2))
+
+    def _draw_gold_rule_range(self, surface, x0, x1, y):
+        """Gold rule line from x0→x1 with diamond ornaments at each end and midpoint."""
+        pygame.draw.line(surface, C.UI_DARK_GOLD, (x0, y + 1), (x1, y + 1), 1)
+        pygame.draw.line(surface, C.UI_GOLD,      (x0, y),     (x1, y),     1)
+        for dx in (x0, (x0 + x1) // 2, x1):
+            pts = [(dx, y - 4), (dx + 4, y), (dx, y + 4), (dx - 4, y)]
+            pygame.draw.polygon(surface, C.UI_GOLD, pts)
+
+    def _draw_radial_glow(self, surface, cx, cy, radius, color, max_alpha=120):
+        """Soft circular gradient glow centered at (cx, cy)."""
+        try:
+            import numpy as np
+            yy, xx = np.mgrid[0:radius * 2, 0:radius * 2]
+            dx = (xx - radius) / max(1, radius)
+            dy = (yy - radius) / max(1, radius)
+            dist = np.clip(np.sqrt(dx * dx + dy * dy), 0.0, 1.0)
+            falloff = (1.0 - dist) ** 2
+            alpha = (falloff * max_alpha).astype(np.uint8)
+            r, g, b = color
+            arr = np.empty((radius * 2, radius * 2, 4), dtype=np.uint8)
+            arr[:, :, 0] = r
+            arr[:, :, 1] = g
+            arr[:, :, 2] = b
+            arr[:, :, 3] = alpha
+            glow = pygame.image.frombuffer(arr.tobytes(), (radius * 2, radius * 2),
+                                            'RGBA').convert_alpha()
+            surface.blit(glow, (cx - radius, cy - radius))
+        except ImportError:
+            # Fallback — concentric circles
+            for i in range(radius, 0, -8):
+                a = int(max_alpha * (1 - i / radius) ** 2)
+                if a <= 0:
+                    continue
+                s = pygame.Surface((i * 2, i * 2), pygame.SRCALPHA)
+                pygame.draw.circle(s, (*color, a), (i, i), i)
+                surface.blit(s, (cx - i, cy - i))
+
+    # Intro title-card sequence.
+    # Each tuple: (text, enter_time_sec, font_size, base_angle_deg, (cx, cy))
+    _OPENING_CARDS = [
+        ("SHUFFLE",  0.05,  60, -10, (-220, -120)),
+        ("DEAL",     0.55,  92,   7,   (-30,  -25)),
+        ("DRAW!",    1.05, 140,  -5,  (180,  100)),
+    ]
+    _CARD_ENTER_DURATION = 0.22
 
     def _draw_opening(self, surface):
-        font = fonts.pixel(20, bold=True)
-        t = font.render("BATTLE START!", True, C.UI_GOLD)
-        shadow = font.render("BATTLE START!", True, C.UI_DARK_GOLD)
-        cx = C.SCREEN_W // 2 - t.get_width() // 2
-        cy = C.SCREEN_H // 2 - t.get_height() // 2
-        surface.blit(shadow, (cx + 2, cy + 2))
-        surface.blit(t, (cx, cy))
+        """Battlefield is already drawn behind this. Stack SHUFFLE / DEAL / DRAW!
+        title cards as they slap onto the screen with scale-bounce + slight rotation."""
+        elapsed = self._opening_elapsed
+        scx = C.SCREEN_W // 2
+        scy = C.SCREEN_H // 2
+
+        # Subtle vignette for legibility — only fades in for the first 0.4s
+        if elapsed < 0.45:
+            a = int(80 * min(1.0, elapsed / 0.2))
+            vig = pygame.Surface((C.SCREEN_W, C.SCREEN_H), pygame.SRCALPHA)
+            vig.fill((0, 0, 0, a))
+            surface.blit(vig, (0, 0))
+
+        for text, enter_t, size, angle, (ox, oy) in self._OPENING_CARDS:
+            local = elapsed - enter_t
+            if local < 0:
+                continue
+            # Scale-bounce: starts at 2.0, springs to 1.0 with mild overshoot
+            if local < self._CARD_ENTER_DURATION:
+                p = local / self._CARD_ENTER_DURATION         # 0 → 1
+                # Ease-out with slight settle: start 2.0, end 1.0 (overshoot 0.9 then back)
+                scale = 1.0 + (2.0 - 1.0) * (1 - p) ** 2
+                alpha = int(255 * min(1.0, p * 1.8))
+            else:
+                scale = 1.0
+                alpha = 255
+
+            # Render at base size, then scale up for the bounce
+            font = fonts.serif(size, bold=True)
+            shadow_s = font.render(text, True, (12, 8, 4))
+            text_s   = font.render(text, True, C.UI_GOLD)
+            tw, th = text_s.get_size()
+            sw, sh = int(tw * scale), int(th * scale)
+            if sw < 1 or sh < 1:
+                continue
+            shadow_scaled = pygame.transform.smoothscale(shadow_s, (sw, sh))
+            text_scaled   = pygame.transform.smoothscale(text_s,   (sw, sh))
+
+            # Rotate
+            shadow_rot = pygame.transform.rotate(shadow_scaled, angle)
+            text_rot   = pygame.transform.rotate(text_scaled,   angle)
+            text_rot.set_alpha(alpha)
+            shadow_rot.set_alpha(alpha)
+
+            rw, rh = text_rot.get_size()
+            dx = scx + ox - rw // 2
+            dy = scy + oy - rh // 2
+            surface.blit(shadow_rot, (dx + 5, dy + 5))
+            surface.blit(text_rot,   (dx, dy))

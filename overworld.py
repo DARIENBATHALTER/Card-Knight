@@ -2,6 +2,7 @@
 Flat overworld — large scrollable world built on a single background image.
 Rocks, trees, and other props will be placed on top later.
 """
+from __future__ import annotations
 import math
 import os
 import pygame
@@ -11,15 +12,14 @@ import sprite_manager as SM
 from chips import make_sample_folder
 
 _BASE    = os.path.dirname(os.path.abspath(__file__))
-_BG_PATH = os.path.join(_BASE, 'assets', 'overworld',
-                         '5d23aef3-1e97-42dd-b491-c591dedcf679.png')
+_BG_PATH = os.path.join(_BASE, 'assets', 'overworld', 'dojo.png')
 
 # ── World constants ────────────────────────────────────────────────────────────
-WORLD_SCALE    = 1.8    # source image scaled up by this factor
-PLAYER_SPEED   = 230    # world px / second
-CHAR_H         = 64     # target character render height (world px)
-ENCOUNTER_DIST = 55     # world px — battle triggers inside this radius
-TALK_DIST      = 70     # world px — TALK prompt visible inside this radius
+WORLD_SCALE    = 1.0    # dojo.png is already 1280×720 — no upscaling
+PLAYER_SPEED   = 180    # world px / second
+CHAR_H         = 88     # target character render height (taller — single-screen scene)
+ENCOUNTER_DIST = 70     # world px — battle triggers inside this radius
+TALK_DIST      = 90     # world px — TALK prompt visible inside this radius
 
 # ── Cached scaled background (avoids re-scaling on every overworld init) ──────
 _bg_surf:  pygame.Surface | None = None
@@ -107,38 +107,27 @@ class Overworld:
         self.world_w = bg.get_width()  if bg else C.SCREEN_W * 3
         self.world_h = bg.get_height() if bg else C.SCREEN_H * 3
 
-        # Player position (world pixels)
-        cx, cy = _w(836, 720)   # near bottom-centre of the grass diamond
-        self.player_x = float(cx)
-        self.player_y = float(cy)
+        # ── Dojo layout ──────────────────────────────────────────────────────
+        # Image is 1280×720 — coordinates are direct screen-space.
+        # The duel mat (light tile area) center is at roughly (640, 420).
+        # Player spawns just south of the central enemy.
+        self.player_x, self.player_y = _w(640, 540)
 
         # ── NPCs ──────────────────────────────────────────────────────────────
         self.npcs = [
-            OWNPC(*_w(570, 370), "Elder Voss", (180, 120, 220),
-                  ["Welcome to Ashenveil, traveler.",
-                   "Our village has been plagued by slimes",
-                   "creeping up from the Crystal Wilds.",
-                   "We need a hero. That hero may be you."]),
-            OWNPC(*_w(1070, 360), "Serin", (220, 165, 50),
-                  ["Wares! Chips! Rare codes for the bold!",
-                   "...Well, I would sell you some, but",
-                   "those slimes cleared me out yesterday.",
-                   "Defeat them and maybe I'll restock."]),
-            OWNPC(*_w(836, 175), "Sage Orlan", (60, 210, 120),
-                  ["You've reached the Crystal Shrine.",
-                   "Monsters guard every path here.",
-                   "Keep your chips close — and your",
-                   "Limit Breaks even closer. Be well."]),
+            OWNPC(*_w(1020, 410), "Sage Hanzo", (180, 140, 220),
+                  ["Welcome to the Dueling Hall, Oden.",
+                   "Step onto the mat when you're ready.",
+                   "Defeat the training Misdeal and your",
+                   "deck will be sharper for it."]),
         ]
         self._active_npc = 0
         self._dialog_page = 0
 
         # ── Enemies ───────────────────────────────────────────────────────────
+        # One stationary enemy on the center of the dueling mat.
         self.enemies = [
-            OWEnemy([_w(480, 500), _w(510, 540), _w(490, 560)], interval=1.0),
-            OWEnemy([_w(920, 440), _w(960, 410), _w(950, 460)], interval=1.1),
-            OWEnemy([_w(700, 610), _w(750, 580), _w(730, 640)], interval=1.2),
-            OWEnemy([_w(1050, 530), _w(1090, 490), _w(1060, 560)], interval=0.95),
+            OWEnemy([_w(640, 420)], interval=1.0),
         ]
         self._battle_enemy_idx = 0
 
@@ -201,11 +190,12 @@ class Overworld:
                 return
 
     def on_battle_end(self, player_won):
+        # Keep the dojo enemy alive — it's a training Misdeal, the player can
+        # walk back into it for repeated practice battles.
         self.start_battle = False
-        if player_won:
-            idx = self._battle_enemy_idx
-            if 0 <= idx < len(self.enemies):
-                self.enemies[idx].alive = False
+        # Return Oden to his spawn so the encounter doesn't immediately re-fire.
+        self.player_x, self.player_y = _w(640, 540)
+        self._moving = False
 
     # ── Events ────────────────────────────────────────────────────────────────
 
@@ -366,15 +356,22 @@ class Overworld:
         # Face dots
         pygame.draw.circle(surf, (255, 255, 255), (sx - 3, sy - 40 + bob), 2)
         pygame.draw.circle(surf, (255, 255, 255), (sx + 3, sy - 40 + bob), 2)
-        # TALK prompt
+        # TALK prompt — serif chip in matching gold/navy style, just above the head
         if _dist(self.player_x, self.player_y, npc.x, npc.y) <= TALK_DIST:
-            lbl = fonts.pixel(6, bold=True).render("TALK", True, C.UI_GOLD)
-            lx  = sx - lbl.get_width() // 2
-            ly  = sy - CHAR_H - 8
-            pygame.draw.rect(surf, C.UI_NAVY,
-                             (lx - 2, ly - 1, lbl.get_width() + 4, lbl.get_height() + 2),
-                             border_radius=2)
-            surf.blit(lbl, (lx, ly))
+            lbl_font = fonts.serif(14, bold=True)
+            lbl = lbl_font.render("TALK", True, C.UI_GOLD)
+            pad_x, pad_y = 9, 3
+            cw, ch = lbl.get_width() + pad_x * 2, lbl.get_height() + pad_y * 2
+            lx = sx - cw // 2
+            ly = sy - CHAR_H + 4   # lower than before — sits just above head
+            chip = pygame.Surface((cw, ch), pygame.SRCALPHA)
+            chip.fill((10, 14, 38, 235))
+            pygame.draw.rect(chip, C.UI_DARK_GOLD, chip.get_rect(),
+                             2, border_radius=4)
+            pygame.draw.rect(chip, C.UI_GOLD, chip.get_rect().inflate(-2, -2),
+                             1, border_radius=3)
+            chip.blit(lbl, (pad_x, pad_y))
+            surf.blit(chip, (lx, ly))
 
     def _draw_enemy(self, surf, sx, sy, enemy):
         bob = 1 if int(self._timer * 4) % 2 else 0
@@ -395,12 +392,18 @@ class Overworld:
             pygame.draw.ellipse(surf, (55, 190, 65), (sx - 10, sy - 28 + b, 20, 16))
             pygame.draw.circle(surf, (255, 255, 255), (sx - 5, sy - 22 + b), 3)
             pygame.draw.circle(surf, (255, 255, 255), (sx + 5, sy - 22 + b), 3)
-        # Warning exclamation
+        # Warning exclamation — large serif "!" with bobbing motion + alert pulse
         if _dist(self.player_x, self.player_y, enemy.x, enemy.y) <= ENCOUNTER_DIST * 3.5:
             pulse    = int(self._timer * 5) % 2 == 0
             warn_col = C.RED if pulse else C.YELLOW
-            warn     = fonts.pixel(8, bold=True).render("!", True, warn_col)
-            surf.blit(warn, (sx - warn.get_width() // 2, sy - CHAR_H - 10))
+            warn_font = fonts.serif(36, bold=True)
+            shadow_s = warn_font.render("!", True, (10, 4, 4))
+            warn_s   = warn_font.render("!", True, warn_col)
+            bob = int(math.sin(self._timer * 6) * 2)
+            wx = sx - warn_s.get_width() // 2
+            wy = sy - CHAR_H - 28 + bob
+            surf.blit(shadow_s, (wx + 2, wy + 2))
+            surf.blit(warn_s,   (wx, wy))
 
     # ── HUD ───────────────────────────────────────────────────────────────────
 
@@ -410,39 +413,86 @@ class Overworld:
         surf.blit(hint, (4, C.SCREEN_H - 11))
 
     def _draw_dialog(self, surf):
-        npc  = self.npcs[self._active_npc]
-        bw, bh = C.SCREEN_W - 16, 76
-        bx, by = 8, C.SCREEN_H - bh - 4
-        pygame.draw.rect(surf, C.UI_NAVY, (bx, by, bw, bh), border_radius=4)
-        pygame.draw.rect(surf, npc.color,  (bx, by, bw, bh), 2, border_radius=4)
+        npc = self.npcs[self._active_npc]
 
-        surf.blit(fonts.pixel(7, bold=True).render(npc.name, True, npc.color),
-                  (bx + 8, by + 5))
-        pg_txt = fonts.pixel(6).render(
-            f"{self._dialog_page + 1}/{len(npc.dialog)}", True, C.UI_DARK_GOLD)
-        surf.blit(pg_txt, (bx + bw - pg_txt.get_width() - 8, by + 6))
-        pygame.draw.line(surf, C.UI_DARK_GOLD,
-                         (bx + 4, by + 18), (bx + bw - 4, by + 18))
+        # Box geometry — wide, tall, centered horizontally near the bottom
+        bw, bh = 1100, 168
+        bx = (C.SCREEN_W - bw) // 2
+        by = C.SCREEN_H - bh - 32
 
+        # Backing — same recipe as the loading / save / victory chrome
+        box = pygame.Surface((bw, bh), pygame.SRCALPHA)
+        box.fill((10, 14, 38, 245))
+        pygame.draw.rect(box, (24, 30, 70, 80),
+                         pygame.Rect(8, 8, bw - 16, bh - 16), border_radius=6)
+        pygame.draw.rect(box, C.UI_DARK_GOLD, box.get_rect(), 4, border_radius=8)
+        pygame.draw.rect(box, C.UI_GOLD,      box.get_rect().inflate(-4, -4),
+                         1, border_radius=6)
+        surf.blit(box, (bx, by))
+
+        # Corner compass-rose ornaments
+        for (cx, cy) in ((bx + 22, by + 22), (bx + bw - 22, by + 22),
+                         (bx + 22, by + bh - 22), (bx + bw - 22, by + bh - 22)):
+            outer = [(cx, cy - 11), (cx + 11, cy), (cx, cy + 11), (cx - 11, cy)]
+            inner = [(cx + 4, cy - 4), (cx + 4, cy + 4),
+                     (cx - 4, cy + 4), (cx - 4, cy - 4)]
+            pygame.draw.polygon(surf, C.UI_GOLD, outer)
+            pygame.draw.polygon(surf, (10, 14, 38), inner)
+            pygame.draw.circle(surf, C.UI_DARK_GOLD, (cx, cy), 2)
+
+        # Name — serif gold, large
+        name_font = fonts.serif(24, bold=True)
+        name_s = name_font.render(npc.name, True, C.UI_GOLD)
+        surf.blit(name_s, (bx + 36, by + 18))
+
+        # Page indicator (top-right)
+        pg_font = fonts.serif(13)
+        pg_s = pg_font.render(f"{self._dialog_page + 1} / {len(npc.dialog)}",
+                              True, (180, 165, 210))
+        surf.blit(pg_s, (bx + bw - pg_s.get_width() - 36, by + 26))
+
+        # Gold rule with diamond endpoints + midpoint
+        rule_y = by + 56
+        rx0, rx1 = bx + 32, bx + bw - 32
+        pygame.draw.line(surf, C.UI_DARK_GOLD, (rx0, rule_y + 1), (rx1, rule_y + 1), 1)
+        pygame.draw.line(surf, C.UI_GOLD,      (rx0, rule_y),     (rx1, rule_y),     1)
+        for dx in (rx0, (rx0 + rx1) // 2, rx1):
+            pygame.draw.polygon(surf, C.UI_GOLD,
+                                [(dx, rule_y - 4), (dx + 4, rule_y),
+                                 (dx, rule_y + 4), (dx - 4, rule_y)])
+
+        # Body text — serif, larger, pixel-width wrap
+        body_font = fonts.serif(19)
         line  = npc.dialog[self._dialog_page]
-        words = line.split()
-        rows, cur = [], ""
+        avail = bw - 72
+        rows  = self._wrap_text_px(line, body_font, avail)
+        text_y = rule_y + 16
+        for i, r in enumerate(rows[:3]):
+            ts = body_font.render(r, True, C.WHITE)
+            surf.blit(ts, (bx + 36, text_y + i * 26))
+
+        # Continue indicator — pulsing gold triangle in bottom-right
+        if int(self._timer * 3) % 2 == 0:
+            ax, ay = bx + bw - 44, by + bh - 32
+            pygame.draw.polygon(surf, C.UI_GOLD,
+                                [(ax, ay - 7), (ax + 14, ay - 7), (ax + 7, ay + 3)])
+
+    @staticmethod
+    def _wrap_text_px(text, font, max_width):
+        words = text.split()
+        rows  = []
+        cur   = ""
         for w in words:
             test = (cur + " " + w).strip()
-            if len(test) <= 50:
+            if font.size(test)[0] <= max_width:
                 cur = test
             else:
-                rows.append(cur); cur = w
+                if cur:
+                    rows.append(cur)
+                cur = w
         if cur:
             rows.append(cur)
-        for i, r in enumerate(rows[:3]):
-            surf.blit(fonts.mono(13).render(r, True, C.WHITE),
-                      (bx + 8, by + 22 + i * 15))
-
-        if int(self._timer * 3) % 2 == 0:
-            ax, ay = bx + bw - 12, by + bh - 8
-            pygame.draw.polygon(surf, C.UI_GOLD,
-                                [(ax, ay - 5), (ax + 8, ay - 5), (ax + 4, ay)])
+        return rows
 
     def _draw_pause(self, surf):
         ov = pygame.Surface((C.SCREEN_W, C.SCREEN_H), pygame.SRCALPHA)

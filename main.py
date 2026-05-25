@@ -1,8 +1,10 @@
 import pygame
 import sys
-from game import Game, _music
+from game import Game
+from music import music as _music
 import constants as C
 import sprite_manager
+import sfx
 
 
 def main():
@@ -12,6 +14,7 @@ def main():
     screen = pygame.display.set_mode((C.SCREEN_W, C.SCREEN_H), pygame.RESIZABLE)
 
     sprite_manager.init()
+    sfx.init()
     clock = pygame.time.Clock()
     game  = Game(screen)
 

@@ -47,31 +47,40 @@ ENEMY_LIGHT  = (180,  52,  52)
 PANEL_LINE   = ( 18,  18,  30)
 
 # ── Elements ──────────────────────────────────────────────────────────────────
-ELEM_NONE = 0
-ELEM_FIRE = 1
-ELEM_AQUA = 2
-ELEM_ELEC = 3
-ELEM_WOOD = 4
+ELEM_NONE      = 0
+ELEM_FIRE      = 1
+ELEM_ICE       = 2
+ELEM_LIGHTNING = 3
+ELEM_EARTH     = 4
+ELEM_LIGHT     = 5
+ELEM_DARK      = 6
 
 ELEM_COLOR = {
-    ELEM_NONE: WHITE,
-    ELEM_FIRE: ORANGE,
-    ELEM_AQUA: CYAN,
-    ELEM_ELEC: YELLOW,
-    ELEM_WOOD: GREEN,
+    ELEM_NONE:      WHITE,
+    ELEM_FIRE:      ORANGE,
+    ELEM_ICE:       ICE_BLUE,
+    ELEM_LIGHTNING: YELLOW,
+    ELEM_EARTH:     BROWN,
+    ELEM_LIGHT:     (255, 240, 180),
+    ELEM_DARK:      PURPLE,
 }
 ELEM_NAME = {
-    ELEM_NONE: "",
-    ELEM_FIRE: "Fire",
-    ELEM_AQUA: "Aqua",
-    ELEM_ELEC: "Elec",
-    ELEM_WOOD: "Wood",
+    ELEM_NONE:      "",
+    ELEM_FIRE:      "Fire",
+    ELEM_ICE:       "Ice",
+    ELEM_LIGHTNING: "Lightning",
+    ELEM_EARTH:     "Earth",
+    ELEM_LIGHT:     "Light",
+    ELEM_DARK:      "Dark",
 }
+# Four-element RPS cycle + mutual Light/Dark pair.
 ELEM_BEATS = {
-    ELEM_FIRE: ELEM_WOOD,
-    ELEM_AQUA: ELEM_FIRE,
-    ELEM_ELEC: ELEM_AQUA,
-    ELEM_WOOD: ELEM_ELEC,
+    ELEM_FIRE:      ELEM_ICE,
+    ELEM_ICE:       ELEM_EARTH,
+    ELEM_EARTH:     ELEM_LIGHTNING,
+    ELEM_LIGHTNING: ELEM_FIRE,
+    ELEM_LIGHT:     ELEM_DARK,
+    ELEM_DARK:      ELEM_LIGHT,
 }
 
 # ── Panel types ───────────────────────────────────────────────────────────────
@@ -96,8 +105,8 @@ CLS_GIGA     = "G"
 
 # ── Battle timing ─────────────────────────────────────────────────────────────
 CUSTOM_GAUGE_TIME = 9.0
-BUSTER_DMG        = 9999   # DEV: one-hit kill
-CHARGED_DMG       = 9999   # DEV: one-hit kill
+BUSTER_DMG        = 5      # uncharged card buster
+CHARGED_DMG       = 20     # fully charged buster
 CHARGE_TIME       = 1.5
 BUSTER_COOL       = 0.5
 CHIP_LOCK_TIME    = 0.10

@@ -4,6 +4,7 @@ import random
 import constants as C
 import effects as FX
 import sprite_manager as SM
+import tile_warp
 
 
 def _flash_white_surf(surf: pygame.Surface) -> pygame.Surface:
@@ -15,9 +16,8 @@ def _flash_white_surf(surf: pygame.Surface) -> pygame.Surface:
 
 
 def _panel_center(col, row):
-    x = C.GRID_X + col * C.PANEL_W + C.PANEL_W // 2
-    y = C.GRID_Y + (row + 1) * C.PANEL_H   # bottom of tile = ground level
-    return (x, y)
+    """Where an entity's feet rest on tile (col, row) — bottom-center of the warped tile."""
+    return tile_warp.tile_floor_center(col, row)
 
 
 class Entity:
@@ -132,41 +132,44 @@ class Player(Entity):
         fw = base_frame.get_width()  if base_frame else 36
         fh = base_frame.get_height() if base_frame else 46
 
-        # Phase effect: t < 1 means we're mid-phase
+        # Phase effect: t < 1 means we're mid-phase — lift + alpha fade only (no squish)
         if self._phase_t < 1.0:
             t = self._phase_t
-            # First half: depart from src — squish + lift + fade out
-            # Second half: arrive at dst — unsquish + drop + fade in
             if t < 0.5:
-                progress = t / 0.5                 # 0→1 during depart
-                draw_cx, draw_cy = _panel_center(*self._phase_src)
-                scale_x = 1.0 - progress * 0.4    # compress to 60% width
-                scale_y = 1.0 - progress * 0.7    # compress to 30% height
-                lift    = int(progress * fh * 0.5) # lift upward
-                alpha   = int((1.0 - progress) * 255)
+                # Depart from src: rise + fade out
+                progress = t / 0.5
+                src_col, src_row = self._phase_src
+                draw_cx, draw_cy = _panel_center(src_col, src_row)
+                phase_row = src_row
+                lift  = int(progress * fh * 0.5)
+                alpha = int((1.0 - progress) * 255)
             else:
-                progress = (t - 0.5) / 0.5        # 0→1 during arrive
+                # Arrive at dst: drop + fade in
+                progress = (t - 0.5) / 0.5
                 draw_cx, draw_cy = cx, cy
-                scale_x = 0.6 + progress * 0.4    # expand back to 100%
-                scale_y = 0.3 + progress * 0.7
-                lift    = int((1.0 - progress) * fh * 0.5)
-                alpha   = int(progress * 255)
+                phase_row = self.row
+                lift  = int((1.0 - progress) * fh * 0.5)
+                alpha = int(progress * 255)
 
             if base_frame:
-                new_w = max(2, int(fw * scale_x))
-                new_h = max(2, int(fh * scale_y))
-                scaled = pygame.transform.scale(base_frame, (new_w, new_h))
+                rs = tile_warp.row_scale(phase_row)
+                dw, dh = max(2, int(fw * rs)), max(2, int(fh * rs))
+                scaled = pygame.transform.smoothscale(base_frame, (dw, dh))
                 scaled.set_alpha(alpha)
-                surface.blit(scaled, (draw_cx - new_w // 2, draw_cy - new_h - lift))
+                surface.blit(scaled, (draw_cx - dw // 2, draw_cy - dh - lift))
             return
 
-        # Normal draw — feet at ground
+        # Normal draw — feet at ground, scaled by row depth
+        rs = tile_warp.row_scale(self.row)
+        dw, dh = max(2, int(fw * rs)), max(2, int(fh * rs))
         if base_frame:
-            surface.blit(base_frame, (cx - fw // 2, cy - fh))
+            scaled = pygame.transform.smoothscale(base_frame, (dw, dh))
+            surface.blit(scaled, (cx - dw // 2, cy - dh))
         else:
             body_color = C.BLUE if not self.guarding else C.LIGHT_BLUE
             pygame.draw.rect(surface, body_color,
-                             pygame.Rect(cx - fw//2, cy - fh, fw, fh), border_radius=4)
+                             pygame.Rect(cx - dw//2, cy - dh, dw, dh), border_radius=4)
+        fw, fh = dw, dh
 
         # Guard indicator
         if self.guarding:
@@ -224,12 +227,14 @@ class Enemy(Entity):
     def _fire_projectile(self, player, eff_list, dmg, color, radius):
         """Fire a traveling projectile toward the player — player can dodge by changing row."""
         row = self.row
-        src_x = C.GRID_X + self.col * C.PANEL_W + C.PANEL_W // 2
+        src_x = tile_warp.tile_center(self.col, row)[0]
 
-        # Panel flash: warn all cols between player's side and enemy (longer duration for travel time)
-        path = [(c, row) for c in range(0, self.col)]
+        # Shockwave panel highlight: only the tile the projectile is over lights up.
+        # TravelingHit.SPEED = 310 px/s; tile avg ~112 px → ~2.8 tiles/sec.
+        # Path is enumerated in travel order (enemy.col-1 down to 0).
+        path = [(c, row) for c in range(self.col - 1, -1, -1)]
         if path:
-            eff_list.insert(0, FX.PanelFlash(path, duration=0.72))
+            eff_list.insert(0, FX.PanelFlash(path, wave_speed=2.8))
 
         # TravelingHit: damage deferred — applied only if player is still on this row
         eff_list.append(FX.TravelingHit(
@@ -439,7 +444,7 @@ class Spikey(Enemy):
 class Bunny(Enemy):
     name = "Bunny"
     HP = 30
-    ELEM = C.ELEM_ELEC
+    ELEM = C.ELEM_LIGHTNING
     COLOR = (230, 230, 230)
 
     HOP_TIME   = 1.2
@@ -547,12 +552,13 @@ class Canodumb(Enemy):
 class Slime(Enemy):
     name = "Slime"
     HP = 60
-    ELEM = C.ELEM_WOOD
+    ELEM = C.ELEM_EARTH
     COLOR = (50, 200, 50)
 
-    IDLE_TIME   = 1.8
-    MOVE_TIME   = 0.4
-    ATTACK_TIME = 0.5
+    IDLE_TIME   = 1.2
+    MOVE_TIME   = 0.30
+    ATTACK_TIME = 0.6
+    WANDER_CHANCE = 0.35   # chance to wander to a random adjacent row instead of pursuing
 
     def __init__(self, col, row):
         super().__init__(col, row)
@@ -574,8 +580,11 @@ class Slime(Enemy):
             if self.flash_timer > 0:
                 frame = _flash_white_surf(frame)
             fw, fh = frame.get_size()
-            surface.blit(frame, (cx - fw // 2, cy - fh))
-            self._draw_float_hp(surface, cx, cy - fh - 4, fw)
+            rs = tile_warp.row_scale(self.row)
+            dw, dh = max(2, int(fw * rs)), max(2, int(fh * rs))
+            scaled = pygame.transform.smoothscale(frame, (dw, dh))
+            surface.blit(scaled, (cx - dw // 2, cy - dh))
+            self._draw_float_hp(surface, cx, cy - dh - 4, dw)
         else:
             color = C.WHITE if self.flash_timer > 0 else self.COLOR
             self._draw_body(surface, cx, cy, color)
@@ -585,12 +594,18 @@ class Slime(Enemy):
         self.ai_timer -= dt
         if self.ai_state == "idle":
             if self.ai_timer <= 0:
-                if abs(self.row - player.row) <= 1:
-                    self.ai_state = "attacking"
-                    self.ai_timer = self.ATTACK_TIME
-                else:
+                # Sometimes wander to a random adjacent row instead of pursuing —
+                # keeps slimes using the top and bottom rows, not just hugging
+                # the player's row.
+                if random.random() < self.WANDER_CHANCE:
+                    self._try_move(0, random.choice([-1, 1]), grid)
+                    self.ai_timer = self.MOVE_TIME
+                elif abs(self.row - player.row) > 1:
                     self._try_move(0, 1 if player.row > self.row else -1, grid)
                     self.ai_timer = self.MOVE_TIME
+                else:
+                    self.ai_state = "attacking"
+                    self.ai_timer = self.ATTACK_TIME
 
         elif self.ai_state == "attacking":
             if self.ai_timer <= 0:

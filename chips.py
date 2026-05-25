@@ -25,9 +25,8 @@ class ChipData:
 # resolve(chip, player, grid, enemies, eff_list) -> None
 
 def _pc(col, row):
-    x = C.GRID_X + col * C.PANEL_W + C.PANEL_W // 2
-    y = C.GRID_Y + row * C.PANEL_H + C.PANEL_H // 2
-    return (x, y)
+    import tile_warp
+    return tile_warp.tile_center(col, row)
 
 def _eff():
     import effects
@@ -38,6 +37,14 @@ def _dmg(entity, damage, element):
         return
     mult = 2.0 if (element != C.ELEM_NONE and C.ELEM_BEATS.get(element) == entity.element) else 1.0
     entity.take_damage(int(damage * mult), element)
+
+
+def _add_travel_flash(eff, player_col, row, flash_color=(255, 215, 40)):
+    """Insert a shockwave PanelFlash along the row from just past the player to grid edge.
+    Use when spawning a TravelingHit so the projectile leaves a lit-up trail of tiles."""
+    path = [(c, row) for c in range(player_col + 1, C.GRID_COLS)]
+    if path:
+        eff.insert(0, _eff().PanelFlash(path, color=flash_color, wave_speed=2.8))
 
 
 # ── Physical weapons ──────────────────────────────────────────────────────────
@@ -95,28 +102,30 @@ def _longbow_resolve(chip, player, grid, enemies, eff):
     eff.append(_eff().ProjectileEffect(_pc(player.col, row), _pc(C.GRID_COLS - 1, row), C.YELLOW, 9))
 
 
-# ── Fire magic ────────────────────────────────────────────────────────────────
+# ── Fire (Ignite / Scorch / Immolate) ─────────────────────────────────────────
 
 def _fire_resolve(chip, player, grid, enemies, eff):
+    """T1/T2: row-aimed orb with adjacent-row splash."""
     row = player.row
     primary = None
     for col in range(player.col + 1, C.GRID_COLS):
         targets = [e for e in enemies if e.col == col and e.row == row and e.alive]
         if targets:
             primary = targets[0]
-            # Splash damage is instant (player aimed the orb, splash is physics)
             for e in enemies:
                 if e.col == col and abs(e.row - row) == 1 and e.alive:
                     _dmg(e, chip.damage // 2, chip.element)
             eff.append(_eff().ExplosionEffect(_pc(col, row), C.ORANGE, 35, 0.28))
             break
+    _add_travel_flash(eff, player.col, row, (255, 130, 40))
     src = _pc(player.col, row)
     eff.append(_eff().TravelingHit(
         src, row, player.col, C.GRID_COLS - 1,
         chip.damage, chip.element, primary, C.ORANGE, 9
     ))
 
-def _firaga_resolve(chip, player, grid, enemies, eff):
+def _immolate_resolve(chip, player, grid, enemies, eff):
+    """T3: column eruption — first hit column burns top-to-bottom."""
     row = player.row
     for col in range(player.col + 1, C.GRID_COLS):
         targets = [e for e in enemies if e.col == col and e.row == row and e.alive]
@@ -129,9 +138,10 @@ def _firaga_resolve(chip, player, grid, enemies, eff):
             break
 
 
-# ── Ice magic ─────────────────────────────────────────────────────────────────
+# ── Ice (Freeze / Icicle / Blizzard) ──────────────────────────────────────────
 
-def _blizzard_resolve(chip, player, grid, enemies, eff):
+def _freeze_resolve(chip, player, grid, enemies, eff):
+    """T1/T2: ice shard with adjacent-row splash."""
     row = player.row
     primary = None
     for col in range(player.col + 1, C.GRID_COLS):
@@ -142,13 +152,15 @@ def _blizzard_resolve(chip, player, grid, enemies, eff):
                 if e.col == col and abs(e.row - row) == 1 and e.alive:
                     _dmg(e, chip.damage // 2, chip.element)
             break
+    _add_travel_flash(eff, player.col, row, (140, 210, 255))
     src = _pc(player.col, row)
     eff.append(_eff().TravelingHit(
         src, row, player.col, C.GRID_COLS - 1,
         chip.damage, chip.element, primary, C.LIGHT_BLUE, 10
     ))
 
-def _blizzaga_resolve(chip, player, grid, enemies, eff):
+def _blizzard_resolve(chip, player, grid, enemies, eff):
+    """T3: column ice explosion."""
     row = player.row
     for col in range(player.col + 1, C.GRID_COLS):
         targets = [e for e in enemies if e.col == col and e.row == row and e.alive]
@@ -161,16 +173,16 @@ def _blizzaga_resolve(chip, player, grid, enemies, eff):
             break
 
 
-# ── Thunder magic ─────────────────────────────────────────────────────────────
+# ── Lightning (Jolt / Shock / Electrocute) ────────────────────────────────────
 
-def _thunder_resolve(chip, player, grid, enemies, eff):
+def _jolt_resolve(chip, player, grid, enemies, eff):
+    """T1/T2: bolt down the row, then chain-arcs through column on hit."""
     row = player.row
     primary = None
     for col in range(player.col + 1, C.GRID_COLS):
         targets = [e for e in enemies if e.col == col and e.row == row and e.alive]
         if targets:
             primary = targets[0]
-            # Column-wide chain lightning is instant (secondary arc)
             for r in range(C.GRID_ROWS):
                 if r != row:
                     for e in enemies:
@@ -178,23 +190,26 @@ def _thunder_resolve(chip, player, grid, enemies, eff):
                             _dmg(e, chip.damage // 2, chip.element)
             eff.append(_eff().ElecEffect(_pc(col, row)))
             break
+    _add_travel_flash(eff, player.col, row, (255, 240, 100))
     src = _pc(player.col, row)
     eff.append(_eff().TravelingHit(
         src, row, player.col, C.GRID_COLS - 1,
         chip.damage, chip.element, primary, C.YELLOW, 7
     ))
 
-def _thundaga_resolve(chip, player, grid, enemies, eff):
+def _electrocute_resolve(chip, player, grid, enemies, eff):
+    """T3: lightning strikes every living enemy."""
     for e in enemies:
         if e.alive:
             _dmg(e, chip.damage, chip.element)
     eff.append(_eff().ScreenFlash(C.YELLOW, 0.2))
-    eff.append(_eff().TextEffect("THUNDAGA!", _pc(6, 2), C.YELLOW, 1.2))
+    eff.append(_eff().TextEffect("ELECTROCUTE!", _pc(6, 2), C.YELLOW, 1.2))
 
 
-# ── Wind magic ────────────────────────────────────────────────────────────────
+# ── Wind (Gust / Gale / Tempest — non-elemental "force" cards) ────────────────
 
-def _aero_resolve(chip, player, grid, enemies, eff):
+def _gust_resolve(chip, player, grid, enemies, eff):
+    """T1: row-aimed wind blast, knocks target back 1 tile if possible."""
     row = player.row
     for col in range(player.col + 1, C.GRID_COLS):
         targets = [e for e in enemies if e.col == col and e.row == row and e.alive]
@@ -208,14 +223,16 @@ def _aero_resolve(chip, player, grid, enemies, eff):
             eff.append(_eff().ProjectileEffect(_pc(player.col, row), _pc(col, row), C.WHITE, 7))
             break
 
-def _aerora_resolve(chip, player, grid, enemies, eff):
+def _gale_resolve(chip, player, grid, enemies, eff):
+    """T2: hits every enemy in row, boomerang VFX."""
     row = player.row
     for e in enemies:
         if e.row == row and e.alive:
             _dmg(e, chip.damage, chip.element)
     eff.append(_eff().BoomerangEffect(_pc(player.col, row), _pc(C.GRID_COLS - 1, row)))
 
-def _aeroga_resolve(chip, player, grid, enemies, eff):
+def _tempest_resolve(chip, player, grid, enemies, eff):
+    """T3: column eruption on first hit."""
     row = player.row
     for col in range(player.col + 1, C.GRID_COLS):
         targets = [e for e in enemies if e.col == col and e.row == row and e.alive]
@@ -228,9 +245,10 @@ def _aeroga_resolve(chip, player, grid, enemies, eff):
             break
 
 
-# ── Earth magic ───────────────────────────────────────────────────────────────
+# ── Earth (Crack / Quake / Landslide) ─────────────────────────────────────────
 
-def _stone_resolve(chip, player, grid, enemies, eff):
+def _crack_resolve(chip, player, grid, enemies, eff):
+    """T1: homing boulder, cracks target's panel."""
     import random
     alive = [e for e in enemies if e.alive]
     if not alive:
@@ -240,7 +258,8 @@ def _stone_resolve(chip, player, grid, enemies, eff):
     grid.crack_panel(target.col, target.row)
     eff.append(_eff().HomingEffect(_pc(player.col, player.row), _pc(target.col, target.row)))
 
-def _stonera_resolve(chip, player, grid, enemies, eff):
+def _quake_resolve(chip, player, grid, enemies, eff):
+    """T2: 3x3 crack centered on target."""
     import random
     alive = [e for e in enemies if e.alive]
     if not alive:
@@ -252,50 +271,19 @@ def _stonera_resolve(chip, player, grid, enemies, eff):
             grid.crack_panel(target.col + dc, target.row + dr)
     eff.append(_eff().ExplosionEffect(_pc(target.col, target.row), C.GREEN, 45, 0.3))
 
-def _stonega_resolve(chip, player, grid, enemies, eff):
+def _landslide_resolve(chip, player, grid, enemies, eff):
+    """T3: every enemy hit + every panel cracked."""
     for e in enemies:
         if e.alive:
             _dmg(e, chip.damage, chip.element)
             grid.crack_panel(e.col, e.row)
     eff.append(_eff().ScreenFlash(C.DARK_GREEN, 0.25))
-    eff.append(_eff().TextEffect("STONEGA!", _pc(6, 2), C.GREEN, 1.2))
+    eff.append(_eff().TextEffect("LANDSLIDE!", _pc(6, 2), C.GREEN, 1.2))
 
 
-# ── Dark magic ────────────────────────────────────────────────────────────────
+# ── Recovery / Defense ────────────────────────────────────────────────────────
 
-def _drain_resolve(chip, player, grid, enemies, eff):
-    import random
-    alive = [e for e in enemies if e.alive]
-    if not alive:
-        return
-    target = random.choice(alive)
-    _dmg(target, chip.damage, chip.element)
-    heal = chip.damage // 2
-    player.hp = min(player.max_hp, player.hp + heal)
-    eff.append(_eff().ProjectileEffect(
-        _pc(target.col, target.row), _pc(player.col, player.row), C.PURPLE, 8))
-    eff.append(_eff().RecoveryEffect(_pc(player.col, player.row), heal))
-
-def _flare_resolve(chip, player, grid, enemies, eff):
-    import random
-    alive = [e for e in enemies if e.alive]
-    if not alive:
-        return
-    target = random.choice(alive)
-    for e in enemies:
-        if e.alive and (
-            (e.col == target.col and e.row == target.row) or
-            (e.col == target.col and abs(e.row - target.row) == 1) or
-            (e.row == target.row and abs(e.col - target.col) == 1)
-        ):
-            _dmg(e, chip.damage, chip.element)
-    eff.append(_eff().BombTrajectory(_pc(player.col, player.row), _pc(target.col, target.row)))
-    eff.append(_eff().TextEffect("FLARE!", _pc(6, 2), C.PURPLE, 1.2))
-
-
-# ── Recovery / White magic ────────────────────────────────────────────────────
-
-def _cure_resolve(chip, player, grid, enemies, eff):
+def _heal_resolve(chip, player, grid, enemies, eff):
     player.hp = min(player.max_hp, player.hp + chip.heals)
     eff.append(_eff().RecoveryEffect(_pc(player.col, player.row), chip.heals))
 
@@ -320,25 +308,42 @@ def _dash_resolve(chip, player, grid, enemies, eff):
     eff.append(_eff().DashEffect(_pc(player.col, row), _pc(C.GRID_COLS - 1, row)))
 
 
-# ── Summons (Giga class — all enemies) ───────────────────────────────────────
+# ── Stub resolvers for new canonical cards (mechanics TBD) ────────────────────
+# These exist so the cards are real DB entries usable for asset/UI work.
+# Replace with bespoke mechanics once each spell is designed.
 
-def _make_summon(display_name, flash_color):
-    def resolve(chip, player, grid, enemies, eff):
-        for e in enemies:
-            if e.alive:
-                _dmg(e, chip.damage, chip.element)
-        eff.append(_eff().ScreenFlash(flash_color, 0.3))
-        eff.append(_eff().TextEffect(f"{display_name}!", _pc(6, 2), flash_color, 1.8))
-    return resolve
+def _stub_dmg_row_resolve(chip, player, grid, enemies, eff):
+    """Generic placeholder: hits all enemies in player's row."""
+    row = player.row
+    color = C.ELEM_COLOR.get(chip.element, C.WHITE)
+    for e in enemies:
+        if e.row == row and e.alive:
+            _dmg(e, chip.damage, chip.element)
+    eff.append(_eff().ProjectileEffect(
+        _pc(player.col, row), _pc(C.GRID_COLS - 1, row), color, 7))
 
-def _phoenix_resolve(chip, player, grid, enemies, eff):
+def _stub_dmg_all_resolve(chip, player, grid, enemies, eff):
+    """Generic placeholder for T3 / all-enemy spells."""
+    color = C.ELEM_COLOR.get(chip.element, C.WHITE)
     for e in enemies:
         if e.alive:
             _dmg(e, chip.damage, chip.element)
+    eff.append(_eff().ScreenFlash(color, 0.25))
+    eff.append(_eff().TextEffect(chip.name.upper() + "!", _pc(6, 2), color, 1.2))
+
+def _stub_status_resolve(chip, player, grid, enemies, eff):
+    """Placeholder for Green afflictions and White status clears — visible feedback only."""
+    color = C.ELEM_COLOR.get(chip.element, C.WHITE)
+    eff.append(_eff().TextEffect(
+        chip.name.upper() + "!", _pc(player.col, player.row), color, 0.9))
+
+def _stub_revive_resolve(chip, player, grid, enemies, eff):
+    """Placeholder — no party-death system in real-time grid combat yet.
+    Falls back to a full heal as visible feedback."""
     player.hp = player.max_hp
-    eff.append(_eff().ScreenFlash(C.ORANGE, 0.35))
     eff.append(_eff().RecoveryEffect(_pc(player.col, player.row), player.max_hp))
-    eff.append(_eff().TextEffect("PHOENIX!", _pc(6, 2), C.ORANGE, 1.8))
+    eff.append(_eff().TextEffect(
+        chip.name.upper() + "!", _pc(player.col, player.row), C.WHITE, 1.2))
 
 
 # ── Limit Breaks (Program Advance equivalents) ────────────────────────────────
@@ -354,16 +359,16 @@ def _grand_cross_resolve(chip, player, grid, enemies, eff):
 def _absolute_zero_resolve(chip, player, grid, enemies, eff):
     for e in enemies:
         if e.alive:
-            _dmg(e, chip.damage, C.ELEM_AQUA)
+            _dmg(e, chip.damage, C.ELEM_ICE)
     eff.append(_eff().ScreenFlash(C.ICE_BLUE, 0.4))
     eff.append(_eff().TextEffect("ABSOLUTE ZERO!", _pc(6, 2), C.ICE_BLUE, 1.8))
 
-def _raiden_resolve(chip, player, grid, enemies, eff):
+def _stormcall_resolve(chip, player, grid, enemies, eff):
     for e in enemies:
         if e.alive:
-            _dmg(e, chip.damage, C.ELEM_ELEC)
+            _dmg(e, chip.damage, C.ELEM_LIGHTNING)
     eff.append(_eff().ScreenFlash(C.YELLOW, 0.35))
-    eff.append(_eff().TextEffect("RAIDEN!", _pc(6, 2), C.YELLOW, 1.8))
+    eff.append(_eff().TextEffect("STORMCALL!", _pc(6, 2), C.YELLOW, 1.8))
 
 
 CHIP_EFFECTS = {
@@ -374,47 +379,83 @@ CHIP_EFFECTS = {
     "Excalibur":    _excalibur_resolve,
     "Shortbow":     _bow_resolve,
     "Longbow":      _longbow_resolve,
+
     # Fire
-    "Fire":         _fire_resolve,
-    "Fira":         _fire_resolve,
-    "Firaga":       _firaga_resolve,
+    "Ignite":       _fire_resolve,
+    "Scorch":       _fire_resolve,
+    "Immolate":     _immolate_resolve,
+
     # Ice
+    "Freeze":       _freeze_resolve,
+    "Icicle":       _freeze_resolve,
     "Blizzard":     _blizzard_resolve,
-    "Blizzara":     _blizzard_resolve,
-    "Blizzaga":     _blizzaga_resolve,
-    # Thunder
-    "Thunder":      _thunder_resolve,
-    "Thundara":     _thunder_resolve,
-    "Thundaga":     _thundaga_resolve,
-    # Wind
-    "Aero":         _aero_resolve,
-    "Aerora":       _aerora_resolve,
-    "Aeroga":       _aeroga_resolve,
+
+    # Lightning
+    "Jolt":         _jolt_resolve,
+    "Shock":        _jolt_resolve,
+    "Electrocute":  _electrocute_resolve,
+
+    # Wind (non-elemental)
+    "Gust":         _gust_resolve,
+    "Gale":         _gale_resolve,
+    "Tempest":      _tempest_resolve,
+
     # Earth
-    "Stone":        _stone_resolve,
-    "Stonera":      _stonera_resolve,
-    "Stonega":      _stonega_resolve,
-    # Dark
-    "Drain":        _drain_resolve,
-    "Flare":        _flare_resolve,
-    # White magic
-    "Cure":         _cure_resolve,
-    "Cura":         _cure_resolve,
-    "Curaga":       _cure_resolve,
+    "Crack":        _crack_resolve,
+    "Quake":        _quake_resolve,
+    "Landslide":    _landslide_resolve,
+
+    # Light (mechanics TBD)
+    "Sanctify":     _stub_dmg_row_resolve,
+    "Exorcise":     _stub_dmg_row_resolve,
+    "Absolution":   _stub_dmg_all_resolve,
+
+    # Dark (mechanics TBD)
+    "Hex":          _stub_dmg_row_resolve,
+    "Curse":        _stub_dmg_row_resolve,
+    "Oblivion":     _stub_dmg_all_resolve,
+
+    # White — HP restoration
+    "Heal":         _heal_resolve,
+    "Cure":         _heal_resolve,
+    "Recover":      _heal_resolve,
+    "Rejuvenate":   _heal_resolve,
+
+    # White — status clears (mechanics TBD)
+    "Antidote":     _stub_status_resolve,
+    "Voice":        _stub_status_resolve,
+    "Wake":         _stub_status_resolve,
+    "Stonebreak":   _stub_status_resolve,
+
+    # White — revive (mechanics TBD)
+    "Return":       _stub_revive_resolve,
+    "Raise":        _stub_revive_resolve,
+    "Revive":       _stub_revive_resolve,
+    "Resurrect":    _stub_revive_resolve,
+
+    # Green — afflictions (mechanics TBD)
+    "Toxin":        _stub_status_resolve,
+    "Poison":       _stub_status_resolve,
+    "Mute":         _stub_status_resolve,
+    "Silence":      _stub_status_resolve,
+    "Snooze":       _stub_status_resolve,
+    "Slumber":      _stub_status_resolve,
+    "Petrify":      _stub_status_resolve,
+    "Entomb":       _stub_status_resolve,
+    "Delay":        _stub_status_resolve,
+    "Halt":         _stub_status_resolve,
+    "Quicken":      _stub_status_resolve,
+    "Allegro":      _stub_status_resolve,
+
+    # Defense / Utility
     "Protect":      _protect_resolve,
-    # Utility
     "Teleport":     _teleport_resolve,
     "Dash":         _dash_resolve,
-    # Summons
-    "Ifrit":        _make_summon("IFRIT",    C.ORANGE),
-    "Shiva":        _make_summon("SHIVA",    C.ICE_BLUE),
-    "Ramuh":        _make_summon("RAMUH",    C.YELLOW),
-    "Bahamut":      _make_summon("BAHAMUT",  C.PURPLE),
-    "Phoenix":      _phoenix_resolve,
+
     # Limit Breaks
     "GrandCross":   _grand_cross_resolve,
     "AbsoluteZero": _absolute_zero_resolve,
-    "Raiden":       _raiden_resolve,
+    "Stormcall":    _stormcall_resolve,
 }
 
 
@@ -426,85 +467,111 @@ def _c(name, code, dmg, elem, cls_, mb, desc, rarity=1, heals=0):
 
 CHIP_DB: List[ChipData] = [
     # ── Weapons: Swords ──────────────────────────────────────────────────────
-    _c("Sword",     "S", 80,  C.ELEM_NONE, C.CLS_STANDARD, 20, "Slash 1 panel ahead",       1),
-    _c("Sword",     "A", 80,  C.ELEM_NONE, C.CLS_STANDARD, 20, "Slash 1 panel ahead",       1),
-    _c("Sword",     "B", 80,  C.ELEM_NONE, C.CLS_STANDARD, 20, "Slash 1 panel ahead",       1),
-    _c("WideBlade", "S", 140, C.ELEM_NONE, C.CLS_STANDARD, 28, "Slash the entire column",   2),
-    _c("WideBlade", "W", 140, C.ELEM_NONE, C.CLS_STANDARD, 28, "Slash the entire column",   2),
-    _c("Partisan",  "P", 170, C.ELEM_NONE, C.CLS_STANDARD, 32, "Lance thrust 2 panels deep", 2),
-    _c("Partisan",  "S", 170, C.ELEM_NONE, C.CLS_STANDARD, 32, "Lance thrust 2 panels deep", 2),
-    _c("Excalibur", "E", 380, C.ELEM_NONE, C.CLS_MEGA,     72, "Holy blade hits all rows",  4),
+    _c("Sword",       "S", 80,  C.ELEM_NONE, C.CLS_STANDARD, 20, "Slash 1 panel ahead",        1),
+    _c("Sword",       "A", 80,  C.ELEM_NONE, C.CLS_STANDARD, 20, "Slash 1 panel ahead",        1),
+    _c("Sword",       "B", 80,  C.ELEM_NONE, C.CLS_STANDARD, 20, "Slash 1 panel ahead",        1),
+    _c("WideBlade",   "S", 140, C.ELEM_NONE, C.CLS_STANDARD, 28, "Slash the entire column",    2),
+    _c("WideBlade",   "W", 140, C.ELEM_NONE, C.CLS_STANDARD, 28, "Slash the entire column",    2),
+    _c("Partisan",    "P", 170, C.ELEM_NONE, C.CLS_STANDARD, 32, "Lance thrust 2 panels deep", 2),
+    _c("Partisan",    "S", 170, C.ELEM_NONE, C.CLS_STANDARD, 32, "Lance thrust 2 panels deep", 2),
+    _c("Excalibur",   "E", 380, C.ELEM_NONE, C.CLS_MEGA,     72, "Holy blade hits all rows",   4),
 
     # ── Weapons: Bows ─────────────────────────────────────────────────────────
-    _c("Shortbow",  "A", 60,  C.ELEM_NONE, C.CLS_STANDARD, 16, "Quick arrow forward",       1),
-    _c("Shortbow",  "B", 60,  C.ELEM_NONE, C.CLS_STANDARD, 16, "Quick arrow forward",       1),
-    _c("Shortbow",  "C", 60,  C.ELEM_NONE, C.CLS_STANDARD, 16, "Quick arrow forward",       1),
-    _c("Longbow",   "L", 130, C.ELEM_NONE, C.CLS_STANDARD, 28, "Arrow pierces entire row",  2),
-    _c("Longbow",   "A", 130, C.ELEM_NONE, C.CLS_STANDARD, 28, "Arrow pierces entire row",  2),
+    _c("Shortbow",    "A", 60,  C.ELEM_NONE, C.CLS_STANDARD, 16, "Quick arrow forward",        1),
+    _c("Shortbow",    "B", 60,  C.ELEM_NONE, C.CLS_STANDARD, 16, "Quick arrow forward",        1),
+    _c("Shortbow",    "C", 60,  C.ELEM_NONE, C.CLS_STANDARD, 16, "Quick arrow forward",        1),
+    _c("Longbow",     "L", 130, C.ELEM_NONE, C.CLS_STANDARD, 28, "Arrow pierces entire row",   2),
+    _c("Longbow",     "A", 130, C.ELEM_NONE, C.CLS_STANDARD, 28, "Arrow pierces entire row",   2),
 
-    # ── Fire Magic ────────────────────────────────────────────────────────────
-    _c("Fire",      "F", 80,  C.ELEM_FIRE, C.CLS_STANDARD, 22, "Fire bolt + side spread",   1),
-    _c("Fire",      "I", 80,  C.ELEM_FIRE, C.CLS_STANDARD, 22, "Fire bolt + side spread",   1),
-    _c("Fira",      "F", 160, C.ELEM_FIRE, C.CLS_STANDARD, 38, "Stronger fire + spread",    2),
-    _c("Firaga",    "F", 300, C.ELEM_FIRE, C.CLS_MEGA,     60, "Column fire eruption",       3),
+    # ── Fire ──────────────────────────────────────────────────────────────────
+    _c("Ignite",      "I", 80,  C.ELEM_FIRE, C.CLS_STANDARD, 22, "Fire bolt + side spread",    1),
+    _c("Ignite",      "F", 80,  C.ELEM_FIRE, C.CLS_STANDARD, 22, "Fire bolt + side spread",    1),
+    _c("Scorch",      "I", 160, C.ELEM_FIRE, C.CLS_STANDARD, 38, "Stronger fire + spread",     2),
+    _c("Immolate",    "I", 300, C.ELEM_FIRE, C.CLS_MEGA,     60, "Column fire eruption",       3),
 
-    # ── Ice Magic ─────────────────────────────────────────────────────────────
-    _c("Blizzard",  "B", 80,  C.ELEM_AQUA, C.CLS_STANDARD, 22, "Ice shard + adjacent hits", 1),
-    _c("Blizzard",  "I", 80,  C.ELEM_AQUA, C.CLS_STANDARD, 22, "Ice shard + adjacent hits", 1),
-    _c("Blizzara",  "B", 160, C.ELEM_AQUA, C.CLS_STANDARD, 38, "Stronger ice + adjacent",   2),
-    _c("Blizzaga",  "B", 300, C.ELEM_AQUA, C.CLS_MEGA,     60, "Column ice explosion",       3),
+    # ── Ice ───────────────────────────────────────────────────────────────────
+    _c("Freeze",      "F", 80,  C.ELEM_ICE,  C.CLS_STANDARD, 22, "Ice shard + adjacent hits",  1),
+    _c("Freeze",      "B", 80,  C.ELEM_ICE,  C.CLS_STANDARD, 22, "Ice shard + adjacent hits",  1),
+    _c("Icicle",      "F", 160, C.ELEM_ICE,  C.CLS_STANDARD, 38, "Stronger ice + adjacent",    2),
+    _c("Blizzard",    "F", 300, C.ELEM_ICE,  C.CLS_MEGA,     60, "Column ice explosion",       3),
 
-    # ── Thunder Magic ─────────────────────────────────────────────────────────
-    _c("Thunder",   "T", 80,  C.ELEM_ELEC, C.CLS_STANDARD, 26, "Lightning bolt, row bounce", 1),
-    _c("Thunder",   "U", 80,  C.ELEM_ELEC, C.CLS_STANDARD, 26, "Lightning bolt, row bounce", 1),
-    _c("Thundara",  "T", 160, C.ELEM_ELEC, C.CLS_STANDARD, 42, "Stronger bolt, bounces",    2),
-    _c("Thundaga",  "T", 300, C.ELEM_ELEC, C.CLS_MEGA,     60, "Lightning strikes all foes", 3),
+    # ── Lightning ─────────────────────────────────────────────────────────────
+    _c("Jolt",        "J", 80,  C.ELEM_LIGHTNING, C.CLS_STANDARD, 26, "Lightning bolt, row bounce", 1),
+    _c("Jolt",        "T", 80,  C.ELEM_LIGHTNING, C.CLS_STANDARD, 26, "Lightning bolt, row bounce", 1),
+    _c("Shock",       "J", 160, C.ELEM_LIGHTNING, C.CLS_STANDARD, 42, "Stronger bolt, bounces",     2),
+    _c("Electrocute", "J", 300, C.ELEM_LIGHTNING, C.CLS_MEGA,     60, "Lightning strikes all foes", 3),
 
-    # ── Wind Magic ────────────────────────────────────────────────────────────
-    _c("Aero",      "W", 40,  C.ELEM_NONE, C.CLS_STANDARD, 14, "Wind blast, pushes foe back", 1),
-    _c("Aerora",    "W", 110, C.ELEM_NONE, C.CLS_STANDARD, 24, "Wind hits all foes in row", 2),
-    _c("Aeroga",    "W", 200, C.ELEM_NONE, C.CLS_MEGA,     44, "Gale blast, column erupts", 3),
+    # ── Wind (non-elemental force) ────────────────────────────────────────────
+    _c("Gust",        "W", 40,  C.ELEM_NONE, C.CLS_STANDARD, 14, "Wind blast, pushes foe back",   1),
+    _c("Gale",        "W", 110, C.ELEM_NONE, C.CLS_STANDARD, 24, "Wind hits all foes in row",     2),
+    _c("Tempest",     "W", 200, C.ELEM_NONE, C.CLS_MEGA,     44, "Gale blast, column erupts",     3),
 
-    # ── Earth Magic ───────────────────────────────────────────────────────────
-    _c("Stone",     "G", 80,  C.ELEM_WOOD, C.CLS_STANDARD, 24, "Homing boulder cracks panel", 2),
-    _c("Stonera",   "G", 140, C.ELEM_WOOD, C.CLS_STANDARD, 38, "Rock bomb, cracks 3x3 area", 2),
-    _c("Stonega",   "G", 250, C.ELEM_WOOD, C.CLS_MEGA,     56, "Quake — all foes, all panels", 3),
+    # ── Earth ─────────────────────────────────────────────────────────────────
+    _c("Crack",       "C", 80,  C.ELEM_EARTH, C.CLS_STANDARD, 24, "Homing boulder cracks panel",   2),
+    _c("Quake",       "C", 140, C.ELEM_EARTH, C.CLS_STANDARD, 38, "Rock bomb, cracks 3×3 area",    2),
+    _c("Landslide",   "C", 250, C.ELEM_EARTH, C.CLS_MEGA,     56, "All foes hit, panels cracked",  3),
 
-    # ── Dark Magic ────────────────────────────────────────────────────────────
-    _c("Drain",     "D", 140, C.ELEM_NONE, C.CLS_STANDARD, 32, "Drains half damage as HP",  2),
-    _c("Flare",     "D", 340, C.ELEM_NONE, C.CLS_MEGA,     68, "Non-elemental cross blast", 4),
+    # ── Light ─────────────────────────────────────────────────────────────────
+    _c("Sanctify",    "L", 80,  C.ELEM_LIGHT, C.CLS_STANDARD, 22, "Hallowed light strikes a row",  2),
+    _c("Exorcise",    "L", 160, C.ELEM_LIGHT, C.CLS_STANDARD, 40, "Cleansing radiance, row burst", 3),
+    _c("Absolution",  "L", 320, C.ELEM_LIGHT, C.CLS_MEGA,     64, "Judgment — strikes all foes",   4),
 
-    # ── White Magic / Recovery ────────────────────────────────────────────────
-    _c("Cure",      "*", 0, C.ELEM_NONE, C.CLS_STANDARD, 16, "Restore 300 HP",    1, heals=300),
-    _c("Cura",      "*", 0, C.ELEM_NONE, C.CLS_STANDARD, 28, "Restore 800 HP",    2, heals=800),
-    _c("Curaga",    "*", 0, C.ELEM_NONE, C.CLS_MEGA,     50, "Restore 2000 HP",   3, heals=2000),
-    _c("Protect",   "*", 0, C.ELEM_NONE, C.CLS_STANDARD, 14, "Guard next attack 2s", 1),
+    # ── Dark ──────────────────────────────────────────────────────────────────
+    _c("Hex",         "H", 80,  C.ELEM_DARK, C.CLS_STANDARD, 22, "A curse-bolt down the row",     2),
+    _c("Curse",       "H", 160, C.ELEM_DARK, C.CLS_STANDARD, 40, "Deeper curse, row affliction",  3),
+    _c("Oblivion",    "H", 320, C.ELEM_DARK, C.CLS_MEGA,     64, "Void-erasure of all foes",      4),
 
-    # ── Utility ───────────────────────────────────────────────────────────────
-    _c("Teleport",  "T", 0,   C.ELEM_NONE, C.CLS_STANDARD, 28, "Steal 1 enemy column",      2),
-    _c("Dash",      "D", 110, C.ELEM_NONE, C.CLS_STANDARD, 36, "Dash through entire row",   2),
+    # ── White: HP restoration ─────────────────────────────────────────────────
+    _c("Heal",        "*", 0, C.ELEM_NONE, C.CLS_STANDARD, 12, "Restore 200 HP",                 1, heals=200),
+    _c("Cure",        "*", 0, C.ELEM_NONE, C.CLS_STANDARD, 22, "Restore 500 HP",                 2, heals=500),
+    _c("Recover",     "*", 0, C.ELEM_NONE, C.CLS_STANDARD, 34, "Restore 1000 HP",                3, heals=1000),
+    _c("Rejuvenate",  "*", 0, C.ELEM_NONE, C.CLS_MEGA,     50, "Restore 2200 HP",                4, heals=2200),
 
-    # ── Summons (Giga, * wildcard, very rare) ─────────────────────────────────
-    _c("Ifrit",     "*", 420, C.ELEM_FIRE, C.CLS_GIGA, 100, "Hellfire — all foes",      5),
-    _c("Shiva",     "*", 420, C.ELEM_AQUA, C.CLS_GIGA, 100, "Diamond Dust — all foes",  5),
-    _c("Ramuh",     "*", 420, C.ELEM_ELEC, C.CLS_GIGA, 100, "Judgment Bolt — all foes", 5),
-    _c("Bahamut",   "*", 650, C.ELEM_NONE, C.CLS_GIGA, 100, "Mega Flare — all foes",    5),
-    _c("Phoenix",   "*", 280, C.ELEM_FIRE, C.CLS_GIGA, 100, "Flames all + full heal",   5),
+    # ── White: status clears (mechanics TBD) ──────────────────────────────────
+    _c("Antidote",    "*", 0, C.ELEM_NONE, C.CLS_STANDARD, 10, "Clear poison/toxin",             1),
+    _c("Voice",       "*", 0, C.ELEM_NONE, C.CLS_STANDARD, 10, "Clear silence/mute",             1),
+    _c("Wake",        "*", 0, C.ELEM_NONE, C.CLS_STANDARD, 10, "Clear slumber/snooze",           1),
+    _c("Stonebreak",  "*", 0, C.ELEM_NONE, C.CLS_STANDARD, 14, "Clear petrify/entomb",           2),
+
+    # ── White: revive (mechanics TBD) ─────────────────────────────────────────
+    _c("Return",      "*", 0, C.ELEM_NONE, C.CLS_STANDARD, 20, "Recall a fallen ally",           2),
+    _c("Raise",       "*", 0, C.ELEM_NONE, C.CLS_STANDARD, 36, "Revive with partial HP",         3),
+    _c("Revive",      "*", 0, C.ELEM_NONE, C.CLS_MEGA,     56, "Revive with full HP",            4),
+    _c("Resurrect",   "*", 0, C.ELEM_NONE, C.CLS_MEGA,     72, "Revive entire party",            5),
+
+    # ── Green: afflictions (mechanics TBD) ────────────────────────────────────
+    _c("Toxin",       "T", 0, C.ELEM_NONE, C.CLS_STANDARD, 18, "Inflict mild poison",            2),
+    _c("Poison",      "T", 0, C.ELEM_NONE, C.CLS_STANDARD, 32, "Inflict heavy poison",           3),
+    _c("Mute",        "M", 0, C.ELEM_NONE, C.CLS_STANDARD, 16, "Disable enemy magic briefly",    2),
+    _c("Silence",     "M", 0, C.ELEM_NONE, C.CLS_STANDARD, 28, "Disable enemy magic",            3),
+    _c("Snooze",      "Z", 0, C.ELEM_NONE, C.CLS_STANDARD, 18, "Brief sleep on target",          2),
+    _c("Slumber",     "Z", 0, C.ELEM_NONE, C.CLS_STANDARD, 32, "Deep sleep on target",           3),
+    _c("Petrify",     "P", 0, C.ELEM_NONE, C.CLS_STANDARD, 24, "Briefly turn target to stone",   3),
+    _c("Entomb",      "P", 0, C.ELEM_NONE, C.CLS_MEGA,     44, "Permanently entomb a target",    4),
+    _c("Delay",       "D", 0, C.ELEM_NONE, C.CLS_STANDARD, 18, "Slow an enemy's next action",    2),
+    _c("Halt",        "D", 0, C.ELEM_NONE, C.CLS_STANDARD, 32, "Stop an enemy briefly",          3),
+    _c("Quicken",     "Q", 0, C.ELEM_NONE, C.CLS_STANDARD, 18, "Speed up next ally action",      2),
+    _c("Allegro",     "Q", 0, C.ELEM_NONE, C.CLS_MEGA,     40, "Party-wide haste",               4),
+
+    # ── Defense / Utility ─────────────────────────────────────────────────────
+    _c("Protect",     "*", 0,   C.ELEM_NONE, C.CLS_STANDARD, 14, "Guard next attack 2s",        1),
+    _c("Teleport",    "T", 0,   C.ELEM_NONE, C.CLS_STANDARD, 28, "Steal 1 enemy column",        2),
+    _c("Dash",        "D", 110, C.ELEM_NONE, C.CLS_STANDARD, 36, "Dash through entire row",     2),
 ]
 
 
-# ── Limit Break definitions (replaces Program Advances) ───────────────────────
+# ── Limit Break definitions ───────────────────────────────────────────────────
 
 LB_DEFINITIONS = [
-    ("GrandCross",   [("Sword", "S"), ("WideBlade", "S"), ("Partisan", "S")]),
-    ("AbsoluteZero", [("Blizzard", "B"), ("Blizzara", "B"), ("Blizzaga", "B")]),
-    ("Raiden",       [("Thunder", "T"), ("Thundara", "T"), ("Thundaga", "T")]),
+    ("GrandCross",   [("Sword",  "S"), ("WideBlade", "S"), ("Partisan",    "S")]),
+    ("AbsoluteZero", [("Freeze", "F"), ("Icicle",    "F"), ("Blizzard",    "F")]),
+    ("Stormcall",    [("Jolt",   "J"), ("Shock",     "J"), ("Electrocute", "J")]),
 ]
 
 LB_CHIPS = {
-    "GrandCross":   ChipData("GrandCross",   "*", 520, C.ELEM_NONE, C.CLS_GIGA, 100, "LIMIT BREAK!", 5, 0, "GrandCross"),
-    "AbsoluteZero": ChipData("AbsoluteZero", "*", 630, C.ELEM_AQUA, C.CLS_GIGA, 100, "LIMIT BREAK!", 5, 0, "AbsoluteZero"),
-    "Raiden":       ChipData("Raiden",       "*", 740, C.ELEM_ELEC, C.CLS_GIGA, 100, "LIMIT BREAK!", 5, 0, "Raiden"),
+    "GrandCross":   ChipData("GrandCross",   "*", 520, C.ELEM_NONE,      C.CLS_GIGA, 100, "LIMIT BREAK!", 5, 0, "GrandCross"),
+    "AbsoluteZero": ChipData("AbsoluteZero", "*", 630, C.ELEM_ICE,       C.CLS_GIGA, 100, "LIMIT BREAK!", 5, 0, "AbsoluteZero"),
+    "Stormcall":    ChipData("Stormcall",    "*", 740, C.ELEM_LIGHTNING, C.CLS_GIGA, 100, "LIMIT BREAK!", 5, 0, "Stormcall"),
 }
 
 
@@ -552,19 +619,19 @@ def make_sample_folder() -> List[ChipData]:
         return []
 
     folder = (
-        get("Sword",    "S", 3) +   # S-code swords — part of Grand Cross LB
-        get("WideBlade","S", 2) +   # S-code wide
-        get("Partisan", "S", 2) +   # S-code deep → GrandCross: Sword+Wide+Partisan all S
-        get("Shortbow", "A", 3) +   # A-code ranged
-        get("Fire",     "F", 2) +   # F-code fire magic
-        get("Fira",     "F", 2) +   # F-code
-        get("Blizzard", "B", 2) +   # B-code ice → AbsoluteZero: Blizzard+Blizzara+Blizzaga all B
-        get("Blizzara", "B", 2) +
-        get("Blizzaga", "B", 1) +   # 1× for Limit Break completion
-        get("Thunder",  "T", 2) +   # T-code thunder → Raiden: Thunder+Thundara+Thundaga all T
-        get("Thundara", "T", 2) +
-        get("Thundaga", "T", 1) +   # 1× for Limit Break completion
-        get("Cure",     "*", 3) +   # wildcard heals
-        get("Protect",  "*", 3)     # wildcard guard
-    )                               # 3+2+2+3+2+2+2+2+1+2+2+1+3+3 = 30
+        get("Sword",       "S", 3) +    # S-code swords → GrandCross LB
+        get("WideBlade",   "S", 2) +
+        get("Partisan",    "S", 2) +
+        get("Shortbow",    "A", 3) +
+        get("Ignite",      "I", 2) +    # I-code fire
+        get("Scorch",      "I", 2) +
+        get("Freeze",      "F", 2) +    # F-code ice → AbsoluteZero LB
+        get("Icicle",      "F", 2) +
+        get("Blizzard",    "F", 1) +
+        get("Jolt",        "J", 2) +    # J-code lightning → Stormcall LB
+        get("Shock",       "J", 2) +
+        get("Electrocute", "J", 1) +
+        get("Heal",        "*", 3) +    # wildcard heals
+        get("Protect",     "*", 3)      # wildcard guard
+    )                                   # 3+2+2+3+2+2+2+2+1+2+2+1+3+3 = 30
     return folder[:30]
