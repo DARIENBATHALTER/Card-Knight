@@ -190,30 +190,64 @@ class Overworld:
         self._props        = mdef.get('props', [])
         self._blocking_msg = mdef.get('blocking_msg', {})
 
-        # Precompute: which WALL tiles are building walls (warm tan) vs border/stone (gray).
-        # A building wall is an interior wall tile (not on the map perimeter) that has
-        # at least one non-wall neighbour (i.e. it faces open space).
+        # Classify wall tiles: BUILDINGS (warm tan, tall, solid roofs) vs terrain
+        # (gray border / forest, short). A wall is "terrain" if it connects to the
+        # map edge through other walls; isolated wall clusters surrounded by floor
+        # are buildings. Flood-filling from the border catches the whole footprint,
+        # including interior tiles, so building roofs render solid (no holes).
+        terrain: set[tuple[int, int]] = set()
+        stack = []
+        for r in range(self._rows):
+            row = self._grid[r]
+            for c in range(len(row)):
+                if row[c] == map_defs.TILE_WALL and \
+                   (r == 0 or r == self._rows - 1 or c == 0 or c == len(row) - 1):
+                    stack.append((c, r))
+        while stack:
+            c, r = stack.pop()
+            if (c, r) in terrain or not self._is_wall(c, r):
+                continue
+            terrain.add((c, r))
+            stack.extend([(c + 1, r), (c - 1, r), (c, r + 1), (c, r - 1)])
+
         self._building_walls: set[tuple[int, int]] = set()
         for r in range(self._rows):
             row = self._grid[r]
-            row_len = len(row)
-            for c in range(row_len):
-                if row[c] != map_defs.TILE_WALL:
-                    continue
-                # Skip the perimeter ring — those stay gray stone
-                if r == 0 or r == self._rows - 1 or c == 0 or c == row_len - 1:
-                    continue
-                for dc, dr in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                    nr2, nc2 = r + dr, c + dc
-                    if 0 <= nr2 < self._rows and 0 <= nc2 < len(self._grid[nr2]):
-                        if self._grid[nr2][nc2] != map_defs.TILE_WALL:
-                            self._building_walls.add((c, r))
-                            break
+            for c in range(len(row)):
+                if row[c] == map_defs.TILE_WALL and (c, r) not in terrain:
+                    self._building_walls.add((c, r))
 
-        # Which exit tiles lead to interior maps (for door rendering)
+        # Buildings rise taller than terrain walls so they read as structures.
+        self._building_h = int(self._wall_h * 2.6)
+
+        # Which exit tiles lead to interior maps (the doorway floor tiles)
         self._door_tiles: set[tuple[int, int]] = {
             ex['tile'] for ex in self._exits if ex['dest'] in _INTERIOR_MAPS
         }
+
+        # For each interior doorway, mark the nearest building-wall tile and which
+        # visible face ('sw'/'se') points toward the doorway, so we can paint a flat
+        # black door on that face. (Doors render as a black tile-face, swappable for
+        # a real door sprite later.)
+        self._door_panels: dict[tuple[int, int], str] = {}
+        for ex in self._exits:
+            if ex['dest'] not in _INTERIOR_MAPS:
+                continue
+            dc, dr = ex['tile']
+            best, best_d = None, 99
+            for bc, br in self._building_walls:
+                d = abs(bc - dc) + abs(br - dr)
+                if d < best_d and d <= 3:
+                    best, best_d = (bc, br), d
+            if best:
+                bc, br = best
+                # Face whose outward direction points toward the door floor tile.
+                face = 'se' if (dc - bc) >= (dr - br) else 'sw'
+                if dr > br and dc == bc:
+                    face = 'sw'
+                elif dc > bc and dr == br:
+                    face = 'se'
+                self._door_panels[best] = face
 
     # ── Camera ────────────────────────────────────────────────────────────────
 
@@ -452,43 +486,55 @@ class Overworld:
         ox, oy = self._get_origin()
         hw, hh, wh = self._half_w, self._half_h, self._wall_h
 
-        # Build painter-sorted draw list (depth = col + row)
-        drawables = []
+        cull_x0 = -hw * 5
+        cull_x1 = C.SCREEN_W + hw * 5
+        cull_y0 = -hh * 8
+        cull_y1 = C.SCREEN_H + self._building_h + wh * 6
 
+        # ── Pass 1: GROUND tiles only (flat floor types) ──────────────────────
+        # Drawn first, in depth order, so ground can NEVER clip over a character
+        # standing on or behind it. Walls/buildings are handled in pass 2 where
+        # they depth-sort against entities for correct occlusion.
         for r in range(self._rows):
             row = self._grid[r]
             for c in range(len(row)):
-                drawables.append((c + r,          'tile',   c,                r,                row[c]))
+                if row[c] == map_defs.TILE_WALL:
+                    continue
+                sx = int((c - r) * hw + ox)
+                sy = int((c + r) * hh + oy)
+                if cull_x0 < sx < cull_x1 and cull_y0 < sy < cull_y1:
+                    self._draw_tile(surf, sx, sy, row[c], hw, hh, wh, c, r)
+
+        # ── Pass 2: WALLS + props + entities + player, depth-sorted ───────────
+        drawables = []
+        for r in range(self._rows):
+            row = self._grid[r]
+            for c in range(len(row)):
+                if row[c] == map_defs.TILE_WALL:
+                    drawables.append((c + r, 'tile', c, r, row[c]))
 
         for prop in self._props:
             pc, pr = prop['tile']
-            drawables.append((pc + pr + 0.4,       'prop',   pc,               pr,               prop['type']))
+            drawables.append((pc + pr + 0.4, 'prop', pc, pr, prop['type']))
 
         for npc in self.npcs:
-            drawables.append((npc.col + npc.row + 0.6, 'npc', npc.col,          npc.row,          npc))
+            drawables.append((npc.col + npc.row + 0.5, 'npc', npc.col, npc.row, npc))
 
         for e in self.enemies:
             if e.alive:
-                drawables.append((e.col + e.row + 0.6,  'enemy', e.col,         e.row,            e))
+                drawables.append((e.col + e.row + 0.5, 'enemy', e.col, e.row, e))
 
-        drawables.append((self.player_col + self.player_row + 0.6,
+        drawables.append((self.player_col + self.player_row + 0.5,
                           'player', self.player_col, self.player_row, None))
 
         drawables.sort(key=lambda d: d[0])
 
-        cull_x0 = -hw * 5
-        cull_x1 = C.SCREEN_W + hw * 5
-        cull_y0 = -hh * 8
-        cull_y1 = C.SCREEN_H + wh * 6
-
         for depth, kind, c, r, data in drawables:
             sx = int((c - r) * hw + ox)
             sy = int((c + r) * hh + oy)
-
             if kind == 'tile':
-                if not (cull_x0 < sx < cull_x1 and cull_y0 < sy < cull_y1):
-                    continue
-                self._draw_tile(surf, sx, sy, data, hw, hh, wh, int(c), int(r))
+                if cull_x0 < sx < cull_x1 and cull_y0 < sy < cull_y1:
+                    self._draw_tile(surf, sx, sy, data, hw, hh, wh, int(c), int(r))
             elif kind == 'prop':
                 self._draw_prop(surf, sx, sy, data)
             elif kind == 'npc':
@@ -496,10 +542,7 @@ class Overworld:
             elif kind == 'enemy':
                 self._draw_enemy(surf, sx, sy, data)
             elif kind == 'player':
-                # Recompute exact float screen pos for player
-                psx = int((self.player_col - self.player_row) * hw + ox)
-                psy = int((self.player_col + self.player_row) * hh + oy)
-                self._draw_player(surf, psx, psy)
+                self._draw_player(surf, sx, sy)
 
         # HUD
         if self.state == OWState.WALK:
@@ -515,47 +558,65 @@ class Overworld:
 
     # ── Tile rendering ────────────────────────────────────────────────────────
 
+    def _is_wall(self, c, r):
+        if r < 0 or r >= self._rows:
+            return False
+        row = self._grid[r]
+        if c < 0 or c >= len(row):
+            return False
+        return row[c] == map_defs.TILE_WALL
+
     def _draw_tile(self, surf, sx, sy, tile_type, hw, hh, wh, col, row):
         is_building = (col, row) in self._building_walls
-        is_door     = (col, row) in self._door_tiles
+        door_face   = self._door_panels.get((col, row))
 
         if tile_type == map_defs.TILE_WALL:
+            # Blocks extrude UPWARD: the roof sits at (sy - H) and the visible
+            # south faces drop from the roof down to the ground diamond. Drawing
+            # upward (rather than down) is what makes a building correctly OCCLUDE
+            # a character standing behind it once tiles depth-sort by (col+row).
+            H  = self._building_h if is_building else wh
             tc = _BLDG_TOP   if is_building else _WALL_TOP
             lc = _BLDG_LEFT  if is_building else _WALL_LEFT
             rc = _BLDG_RIGHT if is_building else _WALL_RIGHT
 
-            # Left face
-            pygame.draw.polygon(surf, lc, [
-                (sx - hw, sy),
-                (sx,      sy + hh),
-                (sx,      sy + hh + wh),
-                (sx - hw, sy      + wh),
-            ])
-            # Right face
-            pygame.draw.polygon(surf, rc, [
-                (sx,      sy + hh),
-                (sx + hw, sy),
-                (sx + hw, sy      + wh),
-                (sx,      sy + hh + wh),
-            ])
-            # Top diamond
-            top = [(sx, sy - hh), (sx + hw, sy), (sx, sy + hh), (sx - hw, sy)]
-            pygame.draw.polygon(surf, tc, top)
-            pygame.draw.polygon(surf, (0, 0, 0), top, 1)
+            # Only draw a side face when the neighbour sharing it is NOT also a wall,
+            # so a solid building reads as one structure with no internal seams.
+            show_sw = not self._is_wall(col, row + 1)   # face toward screen down-left
+            show_se = not self._is_wall(col + 1, row)   # face toward screen down-right
 
-            # Door cutout on building wall's south-west face
-            if is_door:
-                dw = hw // 2
-                dh = int(wh * 0.65)
-                # Door arch on left face, centred
-                dlx = sx - hw + hw // 4
-                dly = sy + hh + wh - dh
-                pygame.draw.rect(surf, (38, 22, 10), (dlx, dly, dw, dh))
-                # Arch top (semicircle)
-                pygame.draw.ellipse(surf, (38, 22, 10),
-                                    (dlx, dly - dh // 4, dw, dh // 2))
-                # Door frame
-                pygame.draw.rect(surf, (80, 55, 30), (dlx, dly, dw, dh), 1)
+            # SW (lower-left) face
+            if show_sw:
+                col_sw = (8, 6, 10) if door_face == 'sw' else lc
+                pygame.draw.polygon(surf, col_sw, [
+                    (sx - hw, sy),
+                    (sx,      sy + hh),
+                    (sx,      sy + hh - H),
+                    (sx - hw, sy      - H),
+                ])
+                if door_face == 'sw':
+                    pygame.draw.polygon(surf, (90, 62, 34), [
+                        (sx - hw, sy), (sx, sy + hh),
+                        (sx, sy + hh - H), (sx - hw, sy - H)], 2)
+            # SE (lower-right) face
+            if show_se:
+                col_se = (8, 6, 10) if door_face == 'se' else rc
+                pygame.draw.polygon(surf, col_se, [
+                    (sx,      sy + hh),
+                    (sx + hw, sy),
+                    (sx + hw, sy      - H),
+                    (sx,      sy + hh - H),
+                ])
+                if door_face == 'se':
+                    pygame.draw.polygon(surf, (90, 62, 34), [
+                        (sx, sy + hh), (sx + hw, sy),
+                        (sx + hw, sy - H), (sx, sy + hh - H)], 2)
+
+            # Roof (top diamond) raised by H
+            roof = [(sx, sy - hh - H), (sx + hw, sy - H),
+                    (sx, sy + hh - H), (sx - hw, sy - H)]
+            pygame.draw.polygon(surf, tc, roof)
+            pygame.draw.polygon(surf, (0, 0, 0), roof, 1)
 
         else:
             tc = _TILE_TOP.get(tile_type, (100, 100, 100))
@@ -607,10 +668,14 @@ class Overworld:
     def _draw_player(self, surf, sx, sy):
         d  = self._direction
         sm = 0.95 if d in self._DIAGONALS else 1.0
-        sr = int(18 * sm)
-        shadow = pygame.Surface((sr * 2, sr), pygame.SRCALPHA)
-        pygame.draw.ellipse(shadow, (0, 0, 0, 80), shadow.get_rect())
-        surf.blit(shadow, (sx - sr, sy - sr // 2))
+        # Flat contact shadow centred exactly under the feet anchor (sx, sy) in
+        # every direction. Normalised sprites put the feet at (sx, sy), so a
+        # simple centred ellipse stays planted as Oden turns.
+        sw = int(40 * sm)
+        sh = int(16 * sm)
+        shadow = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        pygame.draw.ellipse(shadow, (0, 0, 0, 85), shadow.get_rect())
+        surf.blit(shadow, (sx - sw // 2, sy - sh // 2))
         frames = (SM.get(f'oden_walk_{d}') or SM.get('oden_run')) if self._moving \
             else (SM.get(f'oden_idle_{d}') or SM.get('oden_idle'))
         if frames:

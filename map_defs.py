@@ -46,21 +46,21 @@ def _row(s):
 _CH = [
     _row('######################'),  # 0
     _row('#....................#'),  # 1
-    _row('#.###.......####..###'),  # 2  Oden's house cols 2-4, Courier cols 12-15
-    _row('#.#.#.......#..#..#.#'),  # 3
-    _row('#.#.#.......#..#..#.#'),  # 4
-    _row('#....................#'),  # 5
+    _row('#.###.......####.....#'),  # 2  Oden's house cols 2-4 (solid), Courier cols 12-15 (solid)
+    _row('#.###.......####.....#'),  # 3
+    _row('#.###.......####.....#'),  # 4
+    _row('#....................#'),  # 5  door floor tiles south of each building
     _row('#....................#'),  # 6
-    _row('#........###.........#'),  # 7  Shrine enclosure (decorative only, passable inside)
-    _row('#........#.#.........#'),  # 8
-    _row('.===.====.#.====.====.'),  # 9  EXIT west (col 0 is open) — main path
-    _row('.===.====.###====.===='),  #10  EXIT west continues
+    _row('#....................#'),  # 7  (shrine now free-standing — no enclosure)
+    _row('#....................#'),  # 8
+    _row('.====================.'),  # 9  EXIT west — clear east-west path
+    _row('.====================.'),  #10  EXIT west — clear east-west path
     _row('#....................#'),  #11
     _row('#....................#'),  #12
-    _row('#..###.............##'),  #13  Store cols 3-5, Neighbor cols 18-19
-    _row('#..#.#.............#.'),  #14
-    _row('#..#.#.............#.'),  #15
-    _row('#....................#'),  #16
+    _row('#..###.........###...#'),  #13  Store cols 3-5 (solid), Neighbor cols 15-17 (solid)
+    _row('#..###.........###...#'),  #14
+    _row('#..###.........###...#'),  #15
+    _row('#....................#'),  #16  door floor tiles south of each building
     _row('#....................#'),  #17
     _row('#....................#'),  #18
     _row('#....................#'),  #19
@@ -69,68 +69,65 @@ _CH = [
 ]
 
 # ──────────────────────────────────────────────────────────────────────────────
-# THE BRIAR ROAD  22×48
-# Long winding route, Cardhollow (south) → Veilgate (north).
-# Path snakes from bottom-center to top-center with bends.
-# Ruined shrine prop mid-route. Dense forest either side.
+# THE BRIAR ROAD  48 wide × 22 tall
+# Long winding route. Cardhollow sits at the EAST end (high col); Veilgate at the
+# WEST end (low col). Travel = DECREASING col, which renders as screen NW (up-left)
+# — so the road visibly heads NW from Cardhollow toward Veilgate, matching the
+# direction the player walks out of Cardhollow's west gate.
+#
+# The path is a winding horizontal band: for each column we open a small set of
+# rows whose centre meanders up and down. Forest (wall) fills the rest.
 # ──────────────────────────────────────────────────────────────────────────────
-def _road_row(path_cols, width=22):
-    """Build a route row: wall border, dense bush (#) except on path cols."""
-    row = []
-    for c in range(width):
-        if c == 0 or c == width - 1:
-            row.append(TILE_WALL)
-        elif c in path_cols:
-            row.append(TILE_PATH)
-        else:
-            row.append(TILE_WALL)  # dense forest (impassable)
-    return row
+_BR_W, _BR_H = 48, 22
 
+import math as _math
 
-def _open_row(path_cols, width=22):
-    """Like road_row but uses GRASS for non-path cells (clearing zones)."""
-    row = []
-    for c in range(width):
-        if c == 0 or c == width - 1:
-            row.append(TILE_WALL)
-        elif c in path_cols:
-            row.append(TILE_PATH)
-        else:
-            row.append(TILE_GRASS)
-    return row
+# Centre row of the path at each column — a meander built from gentle sine waves.
+def _path_center(col: int) -> int:
+    base = _BR_H / 2
+    wob  = 3.4 * _math.sin(col * 0.32) + 1.8 * _math.sin(col * 0.11 + 1.0)
+    return int(round(base + wob))
 
+# Per-column open rows (path band), and which columns are clearings (wider).
+_CLEARING_COLS = set(range(22, 27))   # mid-route clearing (ruined shrine sits here)
 
-# path column sets at each row (snakes from bottom to top)
-_P = {r: set() for r in range(48)}
-# Bottom approach — wide entry from Cardhollow (south exit)
-for r in range(44, 48): _P[r] = {9, 10, 11}
-# Path body
-for r in range(38, 44): _P[r] = {10, 11, 12}
-for r in range(33, 38): _P[r] = {11, 12, 13}
-# First bend westward
-for r in range(29, 33): _P[r] = {10, 11, 12}
-for r in range(25, 29): _P[r] = {8, 9, 10}
-# Clearing (ruined shrine area)
-for r in range(22, 25): _P[r] = {7, 8, 9, 10, 11}
-# Continue northwest
-for r in range(18, 22): _P[r] = {9, 10, 11}
-for r in range(14, 18): _P[r] = {10, 11, 12}
-# Final bend east toward Veilgate
-for r in range(10, 14): _P[r] = {11, 12, 13}
-for r in range(5, 10):  _P[r] = {10, 11, 12}
-# Top approach
-for r in range(0, 5):   _P[r] = {9, 10, 11}
+_PATH_ROWS = {}   # col -> set of open rows
+for _c in range(_BR_W):
+    cen   = _path_center(_c)
+    half  = 3 if _c in _CLEARING_COLS else 1   # clearing is wider
+    rows  = set(range(cen - half, cen + half + 1))
+    rows  = {r for r in rows if 1 <= r <= _BR_H - 2}
+    _PATH_ROWS[_c] = rows
 
 _ROAD = []
-for r in range(48):
-    if r in (22, 23, 24):  # clearing around shrine
-        _ROAD.append(_open_row(_P[r]))
-    elif r == 0 or r == 47:
-        row = [TILE_WALL] * 22
-        for c in _P[r]: row[c] = TILE_PATH
-        _ROAD.append(row)
-    else:
-        _ROAD.append(_road_row(_P[r]))
+for _r in range(_BR_H):
+    row = []
+    for _c in range(_BR_W):
+        if _r == 0 or _r == _BR_H - 1:
+            row.append(TILE_WALL)                       # north/south forest edge
+        elif _r in _PATH_ROWS[_c]:
+            row.append(TILE_PATH)                       # walkable road
+        elif _c in _CLEARING_COLS and abs(_r - _path_center(_c)) <= 4:
+            row.append(TILE_GRASS)                       # grassy clearing shoulder
+        else:
+            row.append(TILE_WALL)                        # dense forest (impassable)
+    _ROAD.append(row)
+
+# Resolve the centre rows at the two ends for spawn/exit placement.
+_BR_EAST_CEN = _path_center(_BR_W - 2)   # Cardhollow side (high col)
+_BR_WEST_CEN = _path_center(1)           # Veilgate side  (low col)
+_BR_MID      = _BR_W // 2                 # mid-route column (clearing)
+_BR_MID_CEN  = _path_center(_BR_MID)
+
+# Edge-column path rows become the transition tiles on each end.
+_BR_EXITS_TO_CARDHOLLOW = [
+    {'tile': (_BR_W - 1, r), 'dest': 'cardhollow', 'spawn': 'from_briar', 'req_flag': None}
+    for r in sorted(_PATH_ROWS[_BR_W - 1])
+]
+_BR_EXITS_TO_VEILGATE = [
+    {'tile': (0, r), 'dest': 'veilgate', 'spawn': 'from_briar', 'req_flag': None}
+    for r in sorted(_PATH_ROWS[0])
+]
 
 # ──────────────────────────────────────────────────────────────────────────────
 # VEILGATE  24×22
@@ -141,25 +138,25 @@ for r in range(48):
 _VG = [
     _row('########################'),  # 0
     _row('#......................#'),  # 1
-    _row('#.####.......######..##'),  # 2  Edric cols 2-5, Dojo cols 9-14
-    _row('#.#..#.......#....#..##'),  # 3
-    _row('#.#..#.......#....#..##'),  # 4
-    _row('#.#..#.......#....#..##'),  # 5
-    _row('#......................#'),  # 6
+    _row('#.####...######........#'),  # 2  Edric cols 2-5 (solid), Dojo cols 9-14 (solid)
+    _row('#.####...######........#'),  # 3
+    _row('#.####...######........#'),  # 4
+    _row('#.####...######........#'),  # 5
+    _row('#......................#'),  # 6  door floor tiles south of each building
     _row('#......................#'),  # 7
-    _row('#....===.===.===.......#'),  # 8  Cobbled square
-    _row('#....===.###.===.......#'),  # 9  Shrine in center of square
+    _row('#....===.===.===.......#'),  # 8  cobbled square (decorative path)
+    _row('#....===.===.===.......#'),  # 9  shrine now free-standing — no enclosure
     _row('#....===.===.===.......#'),  #10
-    _row('#====.====.====.======.'),  #11  Main east-west path — EAST EXIT (col 23 open)
-    _row('#====.====.====.======.'),  #12
+    _row('#=====================..'),  #11  Main east-west path — EAST EXIT (cols 22-23 open)
+    _row('#=====================..'),  #12
     _row('#......................#'),  #13
-    _row('#.~~~~...............##'),  #14  Canal water (left bank)
-    _row('#.~~~~...............##'),  #15
-    _row('#.~~~~...............##'),  #16
+    _row('#.~~~~.................#'),  #14  canal water (left bank)
+    _row('#.~~~~.................#'),  #15
+    _row('#.~~~~.................#'),  #16
     _row('#......................#'),  #17
-    _row('#..####...........####.'),  #18  Inn cols 3-6, Store cols 18-21
-    _row('#..#..#...........#..#.'),  #19
-    _row('#..#..#...........#..#.'),  #20
+    _row('#..####...........####.#'),  #18  Inn cols 3-6 (solid), Store cols 18-21 (solid)
+    _row('#..####...........####.#'),  #19
+    _row('#..####...........####.#'),  #20
     _row('#......................#'),  #21
     _row('#......................#'),  #22
     _row('########################'),  #23
@@ -238,12 +235,11 @@ MAPS = {
         'tile_w': 48, 'tile_h': 24, 'wall_h': 30,
         'music':  'dojo',
         'spawns': {
-            'default':       (11, 9),   # center of town
-            'from_briar':    (1,  9),   # arrives from west road
-            'from_home':     (3,  5),   # exiting Oden's house
-            'from_courier':  (13, 5),   # exiting Courier Post
-            'from_store':    (4,  16),  # exiting Store
-            'from_neighbor': (18, 16),  # exiting Neighbor
+            'default':       (11, 8),   # center of town (just north of the path)
+            'from_briar':    (2,  9),   # arrives from west road (clear of the exit tile)
+            'from_home':     (3,  6),   # in front of Oden's house, clear of its door
+            'from_courier':  (13, 6),   # in front of Courier Post
+            'from_store':    (4,  17),  # in front of Store
         },
         'exits': [
             # West exits → Briar Road (require package first)
@@ -251,14 +247,15 @@ MAPS = {
              'req_flag': 'package_accepted'},
             {'tile': (0, 10), 'dest': 'briar_road', 'spawn': 'from_cardhollow',
              'req_flag': 'package_accepted'},
-            # Building entries
-            {'tile': (3, 4),  'dest': 'home',    'spawn': 'default', 'req_flag': None},
-            {'tile': (13, 4), 'dest': 'courier', 'spawn': 'default', 'req_flag': None},
-            {'tile': (4, 15), 'dest': 'store',   'spawn': 'default', 'req_flag': None},
+            # Building doors — trigger tiles are the floor squares in front of each
+            # solid building; the black door panel renders on the building face behind.
+            {'tile': (3, 5),  'dest': 'home',    'spawn': 'default', 'req_flag': None},
+            {'tile': (13, 5), 'dest': 'courier', 'spawn': 'default', 'req_flag': None},
+            {'tile': (4, 16), 'dest': 'store',   'spawn': 'default', 'req_flag': None},
         ],
         'npcs': [
             {
-                'tile': (7, 6),
+                'tile': (8, 7),
                 'name': 'Mira',
                 'color': (200, 160, 120),
                 'dialog': _dialog([
@@ -269,7 +266,7 @@ MAPS = {
         ],
         'enemies': [],
         'props': [
-            {'tile': (10, 9), 'type': 'shrine'},
+            {'tile': (10, 7), 'type': 'shrine'},   # free-standing, no enclosure
         ],
         'blocking_msg': {
             # Message shown when player tries to exit west without the package
@@ -282,40 +279,33 @@ MAPS = {
         'tile_w': 48, 'tile_h': 24, 'wall_h': 36,
         'music':  'dojo',
         'spawns': {
-            'from_cardhollow': (10, 45),  # enters from south
-            'from_veilgate':   (10, 2),   # enters from north
+            # East end = Cardhollow side (high col); West end = Veilgate side (low col).
+            'from_cardhollow': (_BR_W - 2, _BR_EAST_CEN),
+            'from_veilgate':   (1,         _BR_WEST_CEN),
         },
-        'exits': [
-            # North exit → Veilgate
-            {'tile': (9, 0),  'dest': 'veilgate', 'spawn': 'from_briar', 'req_flag': None},
-            {'tile': (10, 0), 'dest': 'veilgate', 'spawn': 'from_briar', 'req_flag': None},
-            {'tile': (11, 0), 'dest': 'veilgate', 'spawn': 'from_briar', 'req_flag': None},
-            # South exit → Cardhollow
-            {'tile': (9, 47),  'dest': 'cardhollow', 'spawn': 'from_briar', 'req_flag': None},
-            {'tile': (10, 47), 'dest': 'cardhollow', 'spawn': 'from_briar', 'req_flag': None},
-            {'tile': (11, 47), 'dest': 'cardhollow', 'spawn': 'from_briar', 'req_flag': None},
-        ],
+        'exits': _BR_EXITS_TO_CARDHOLLOW + _BR_EXITS_TO_VEILGATE,
         'npcs': [
             {
-                'tile': (8, 30),
+                'tile': (_BR_W - 14, _path_center(_BR_W - 14)),
                 'name': 'Tired Traveler',
                 'color': (170, 150, 130),
                 'dialog': _dialog([
-                    "I swear I passed the same broken pillar three times heading east.",
+                    "I swear I passed the same broken pillar three times heading west.",
                     "Roads have been strange lately. Watch yourself.",
                 ]),
             },
         ],
         'enemies': [
             {
-                # Tutorial road encounter — gated by story flags in overworld logic
-                'waypoints': [(10, 25), (11, 25), (11, 26), (10, 26)],
+                # Tutorial road encounter — mid-route, gated by story flags.
+                'waypoints': [(_BR_MID, _BR_MID_CEN), (_BR_MID - 1, _BR_MID_CEN),
+                              (_BR_MID - 1, _BR_MID_CEN + 1), (_BR_MID, _BR_MID_CEN + 1)],
                 'interval': 1.8,
                 'story_trigger': True,   # only active if package_accepted & not misdeal_road_beaten
             },
         ],
         'props': [
-            {'tile': (8, 23), 'type': 'shrine_ruined'},
+            {'tile': (_BR_MID + 1, max(2, _BR_MID_CEN - 3)), 'type': 'shrine_ruined'},
         ],
         'blocking_msg': {},
     },
@@ -325,20 +315,21 @@ MAPS = {
         'tile_w': 48, 'tile_h': 24, 'wall_h': 30,
         'music':  'dojo',
         'spawns': {
-            'default':    (21, 11),  # east entrance, arrived from Briar
-            'from_briar': (21, 11),
-            'from_edric': (4, 7),
-            'from_dojo':  (12, 7),
-            'from_inn':   (4, 22),
-            'from_store': (19, 22),
+            'default':    (18, 11),  # east entrance, arrived from Briar (clear of exit)
+            'from_briar': (18, 11),
+            'from_edric': (3, 7),    # in front of Edric's, clear of its door
+            'from_dojo':  (11, 7),   # in front of the Dojo
+            'from_inn':   (4, 22),   # in front of the Inn
+            'from_store': (19, 22),  # in front of the Store
         },
         'exits': [
-            # East exits → Briar Road
-            {'tile': (23, 11), 'dest': 'briar_road', 'spawn': 'from_veilgate', 'req_flag': None},
-            {'tile': (23, 12), 'dest': 'briar_road', 'spawn': 'from_veilgate', 'req_flag': None},
-            # Building entries
-            {'tile': (4, 6),  'dest': 'edric', 'spawn': 'default', 'req_flag': None},
-            {'tile': (12, 6), 'dest': 'dojo',  'spawn': 'default', 'req_flag': None},
+            # East exits → Briar Road  (rows 11/12, in-bounds)
+            {'tile': (22, 11), 'dest': 'briar_road', 'spawn': 'from_veilgate', 'req_flag': None},
+            {'tile': (22, 12), 'dest': 'briar_road', 'spawn': 'from_veilgate', 'req_flag': None},
+            # Building doors — trigger tiles are the floor squares in front of each
+            # solid building; the black door panel renders on the building face behind.
+            {'tile': (3, 6),  'dest': 'edric', 'spawn': 'default', 'req_flag': None},
+            {'tile': (11, 6), 'dest': 'dojo',  'spawn': 'default', 'req_flag': None},
             {'tile': (4, 21), 'dest': 'inn',   'spawn': 'default', 'req_flag': None},
         ],
         'npcs': [
@@ -352,7 +343,7 @@ MAPS = {
                 ]),
             },
             {
-                'tile': (18, 7),
+                'tile': (16, 7),
                 'name': 'Dojo Apprentice',
                 'color': (140, 170, 150),
                 'dialog': _dialog([
@@ -363,13 +354,13 @@ MAPS = {
         ],
         'enemies': [
             {
-                'waypoints': [(16, 8), (17, 8), (17, 9), (16, 9)],
+                'waypoints': [(16, 9), (17, 9), (17, 10), (16, 10)],
                 'interval': 1.5,
                 'story_trigger': False,  # always active (dojo training)
             },
         ],
         'props': [
-            {'tile': (9, 9), 'type': 'shrine'},
+            {'tile': (10, 9), 'type': 'shrine'},   # free-standing in the square
         ],
         'blocking_msg': {},
     },

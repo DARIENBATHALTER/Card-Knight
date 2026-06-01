@@ -298,52 +298,73 @@ def _load_oden_sprites():
     mv_base = _path('sprites', 'characters', 'oden', 'movement')
     first_idle = None
 
+    def _trim(surf: pygame.Surface) -> pygame.Surface:
+        """Crop the transparent border so the frame is tight to the character."""
+        r = surf.get_bounding_rect(min_alpha=1)
+        if r.width <= 0 or r.height <= 0:
+            return surf
+        return surf.subsurface(r).copy()
+
     def _load_dir(direction: str) -> list:
-        """Return [f1,f2,f3] surfaces for a direction, or [] if missing."""
+        """Return [f1,f2,f3] tightly-trimmed surfaces for a direction, or []."""
         d_dir = os.path.join(mv_base, direction)
         frames = []
         for n in (1, 2, 3):
             p = os.path.join(d_dir, f'{direction}{n}.png')
             if os.path.exists(p):
-                frames.append(_pil_to_surf(Image.open(p).convert('RGBA')))
+                frames.append(_trim(_pil_to_surf(Image.open(p).convert('RGBA'))))
         return frames if len(frames) == 3 else []
 
     def _hflip(frames: list) -> list:
         return [pygame.transform.flip(f, True, False) for f in frames]
 
-    def _register(direction: str, frames: list) -> None:
-        nonlocal first_idle
-        f1, f2, f3 = frames
-        _CACHE[f'oden_walk_{direction}'] = [f1, f2, f3, f2]
-        _CACHE[f'oden_idle_{direction}'] = [f2]
-        if first_idle is None:
-            first_idle = f2
+    # ── 1. Gather raw (trimmed) frames for every direction, with mirror fallbacks ──
+    raw: dict[str, list] = {}
+    for direction in ('south', 'north', 'west', 'east'):
+        f = _load_dir(direction)
+        if f:
+            raw[direction] = f
+    if 'east' not in raw and 'west' in raw:
+        raw['east'] = _hflip(raw['west'])
+    for a, b in (('southeast', 'southwest'), ('northeast', 'northwest')):
+        fa, fb = _load_dir(a), _load_dir(b)
+        if fa: raw[a] = fa
+        if fb: raw[b] = fb
+        if a not in raw and b in raw: raw[a] = _hflip(raw[b])
+        if b not in raw and a in raw: raw[b] = _hflip(raw[a])
 
-    # Cardinals — load directly; east mirrors west if no east frames exist
-    for direction in ('south', 'north', 'west'):
-        frames = _load_dir(direction)
-        if frames:
-            _register(direction, frames)
-    east_frames = _load_dir('east')
-    west_frames = _CACHE.get('oden_walk_west', [])
-    if east_frames:
-        _register('east', east_frames)
-    elif len(west_frames) >= 3:
-        _register('east', _hflip(west_frames[:3]))
+    # ── 2. Normalise: scale every direction so the standing (neutral) frame is the
+    #       same character height, then bottom-align all frames onto a uniform-height
+    #       canvas. This keeps Oden a consistent size with feet planted as he turns,
+    #       while preserving each direction's natural walk bob. ──────────────────
+    if raw:
+        target_stand = max(frames[1].get_height() for frames in raw.values())
 
-    # Diagonals — load directly, fall back to mirroring the opposite diagonal
-    mirror_pairs = [('southeast', 'southwest'), ('northeast', 'northwest')]
-    for a, b in mirror_pairs:
-        fa = _load_dir(a)
-        fb = _load_dir(b)
-        if fa:
-            _register(a, fa)
-        elif fb:
-            _register(a, _hflip(fb))
-        if fb:
-            _register(b, fb)
-        elif fa:
-            _register(b, _hflip(fa))
+        scaled: dict[str, list] = {}
+        canvas_h = 0
+        for direction, frames in raw.items():
+            s = target_stand / max(1, frames[1].get_height())
+            sf = []
+            for fr in frames:
+                w = max(1, round(fr.get_width()  * s))
+                h = max(1, round(fr.get_height() * s))
+                sf.append(pygame.transform.scale(fr, (w, h)))
+                canvas_h = max(canvas_h, h)
+            scaled[direction] = sf
+        canvas_h = int(canvas_h * 1.04)   # tiny headroom
+
+        for direction, frames in scaled.items():
+            out = []
+            for fr in frames:
+                fw = fr.get_width()
+                canvas = pygame.Surface((fw, canvas_h), pygame.SRCALPHA)
+                canvas.blit(fr, (0, canvas_h - fr.get_height()))   # feet on the floor
+                out.append(canvas)
+            f1, f2, f3 = out
+            _CACHE[f'oden_walk_{direction}'] = [f1, f2, f3, f2]
+            _CACHE[f'oden_idle_{direction}'] = [f2]
+            if first_idle is None:
+                first_idle = f2
 
     # Legacy keys used by battle / victory code
     if first_idle:
