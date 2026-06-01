@@ -105,10 +105,10 @@ CLS_GIGA     = "G"
 
 # ── Battle timing ─────────────────────────────────────────────────────────────
 CUSTOM_GAUGE_TIME = 9.0
-BUSTER_DMG        = 5      # uncharged card buster
+BUSTER_DMG        = 50     # uncharged card buster
 CHARGED_DMG       = 20     # fully charged buster
 CHARGE_TIME       = 1.5
-BUSTER_COOL       = 0.5
+BUSTER_COOL       = 0.2
 CHIP_LOCK_TIME    = 0.10
 PLAYER_IFRAMES    = 1.5
 

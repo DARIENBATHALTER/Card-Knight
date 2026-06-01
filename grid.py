@@ -2,6 +2,7 @@ import pygame
 import constants as C
 import sprite_manager as SM
 import tile_warp
+import sfx
 
 
 class Panel:
@@ -35,13 +36,17 @@ class Panel:
         """Crack a normal panel; broken panels become holes-ish."""
         if self.type == C.PNL_NORMAL:
             self.type = C.PNL_CRACKED
+            sfx.play('panel_crack')
         elif self.type == C.PNL_CRACKED:
             self.type = C.PNL_BROKEN
             self.broken_timer = 5.0
+            sfx.play('panel_crack')
         elif self.type == C.PNL_GRASS:
             self.type = C.PNL_CRACKED
+            sfx.play('panel_crack')
         elif self.type == C.PNL_ICE:
             self.type = C.PNL_CRACKED
+            sfx.play('panel_crack')
 
     def on_step_off(self):
         """Called when an entity steps off this panel."""

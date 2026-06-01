@@ -8,6 +8,7 @@ import sprite_manager as SM
 from battle import Battle
 from overworld import Overworld
 from music import music as _music, track_path
+import sfx
 
 _BASE = os.path.dirname(os.path.abspath(__file__))
 
@@ -87,7 +88,7 @@ class GameState:
     TITLE       = "title"
     LOADING     = "loading"      # Faux "loading save" screen
     OVERWORLD   = "overworld"
-    TRANSITION  = "transition"   # FF-style zoom+flash into battle
+    BATTLE_INTRO = "battle_intro"  # SHUFFLE/DEAL/DRAW! overlay → wipes into battle
     BATTLE      = "battle"
 
 
@@ -294,6 +295,299 @@ class BattleTransition:
             screen.blit(flash, (0, 0))
 
 
+class BattleIntroSequence:
+    """SHUFFLE / DEAL / DRAW! overlay rendered over the overworld, then wipes into battle.
+
+    Timeline (seconds):
+      0.00  battleintro audio plays (caller's responsibility)
+      0.05  SHUFFLE bar + text  (sfx: shuffle)
+      0.55  DEAL bar + text     (sfx: deal)
+      1.05  DRAW! bar + text    (sfx: deal)
+      1.50  black wipe right-ward begins   (0.35 s)
+      1.85  battle scene wipes in from right (0.40 s)
+      2.25  hold                            (0.20 s)
+      2.45  done
+    """
+
+    # (text, enter_t, font_size, bar_half_h, base_cy_from_center, sfx_name)
+    # (text, enter_t, font_size, bar_half_h, base_cy_from_center, sfx_name, angle_deg)
+    # font_size is intentionally larger than bar_half*2 so text visibly protrudes
+    _WORDS = [
+        ("SHUFFLE", 0.05, 88,  22, -110, 'shuffle', -10),
+        ("DEAL",    0.55, 114, 27,  -10, 'deal',      7),
+        ("DRAW!",   1.05, 144, 33,  110, 'deal',     -5),
+    ]
+    _BAR_EXPAND_DUR = 0.12
+    _BLACK_WIPE_START  = 1.50
+    _BLACK_WIPE_DUR    = 0.35
+    _BATTLE_WIPE_START = 1.85
+    _BATTLE_WIPE_DUR   = 0.40
+    _DONE_AT           = 2.95   # 0.70 s hold so player sees the battlefield before custom screen
+
+    def __init__(self):
+        self.elapsed  = 0.0
+        self.done     = False
+        self._sfx_fired = set()
+
+        CY = C.SCREEN_H // 2
+        self._words = []
+        for text, enter_t, fsize, bar_half, base_cy, sfx_name, angle in self._WORDS:
+            rand_off = random.randint(-28, 28)
+            cy = CY + base_cy + rand_off
+            cy = max(bar_half + 8, min(C.SCREEN_H - bar_half - 8, cy))
+            # Randomise angle slightly so each encounter feels unique
+            rand_angle = angle + random.uniform(-3.0, 3.0)
+            self._words.append({
+                'text':    text,
+                'enter_t': enter_t,
+                'fsize':   fsize,
+                'bar_half': bar_half,
+                'cy':      cy,
+                'angle':   rand_angle,
+                'sfx':     sfx_name,
+                'inner':   [],
+                'outer':   [],
+                'inner_t': 0.0,
+                'outer_t': 0.0,
+            })
+
+    # ── per-word particle helpers ─────────────────────────────────────────────
+
+    def _spawn_inner(self, wd):
+        cy = wd['cy']
+        bar_half = wd['bar_half']
+        y  = cy + random.uniform(-bar_half + 3, bar_half - 3)
+        vx = random.uniform(1400, 2400)   # twice as fast
+        wd['inner'].append({'x': -40.0, 'y': y, 'vx': vx, 'trail': []})
+
+    def _spawn_outer_spark(self, wd):
+        """Single crackling spark from the top or bottom edge of the bar."""
+        cy       = wd['cy']
+        bar_half = wd['bar_half']
+        angle    = wd['angle']
+        rad      = math.radians(angle)
+        cos_a, sin_a = math.cos(rad), math.sin(rad)
+        half_w   = C.SCREEN_W // 2 + 160
+
+        side = random.choice([-1, 1])
+        t    = random.uniform(-0.85, 0.85)   # position along bar length
+        # Edge point in screen space
+        ex = C.SCREEN_W // 2 + half_w * t * cos_a - side * bar_half * sin_a
+        ey = cy             + half_w * t * sin_a + side * bar_half * cos_a
+
+        # Velocity: mostly outward from bar edge (rotated into screen space)
+        vx_loc = random.uniform(-80, 80)
+        vy_loc = side * random.uniform(200, 480)
+        vx = vx_loc * cos_a - vy_loc * sin_a
+        vy = vx_loc * sin_a + vy_loc * cos_a
+
+        life = random.uniform(0.18, 0.45)
+        col  = random.choice([
+            (255, 230,  80),   # bright gold
+            (255, 170,  40),   # orange
+            (255, 255, 210),   # near-white
+            (255, 120,  30),   # ember
+            (255, 245, 160),   # pale gold
+        ])
+        wd['outer'].append({
+            'x': ex, 'y': ey, 'px': ex, 'py': ey,
+            'vx': vx, 'vy': vy, 'life': life, 'max_life': life, 'col': col,
+        })
+
+    def _update_word(self, wd, dt):
+        # Inner bar particles — fast left→right streaks
+        wd['inner_t'] -= dt
+        while wd['inner_t'] <= 0:
+            wd['inner_t'] += 0.016
+            self._spawn_inner(wd)
+        new_inner = []
+        for p in wd['inner']:
+            p['trail'].append(p['x'])
+            if len(p['trail']) > 14:   # longer trail
+                p['trail'].pop(0)
+            p['x'] += p['vx'] * dt
+            if p['x'] < C.SCREEN_W + 80:
+                new_inner.append(p)
+        wd['inner'] = new_inner
+
+        # Outer crackling sparks — continuous spawn
+        wd['outer_t'] -= dt
+        while wd['outer_t'] <= 0:
+            wd['outer_t'] += 0.022
+            self._spawn_outer_spark(wd)
+        new_outer = []
+        for p in wd['outer']:
+            p['px'], p['py'] = p['x'], p['y']
+            p['x']    += p['vx'] * dt
+            p['y']    += p['vy'] * dt
+            p['vx']   *= (1 - 1.5 * dt)   # slight drag
+            p['vy']   *= (1 - 1.5 * dt)
+            p['life'] -= dt
+            if p['life'] > 0:
+                new_outer.append(p)
+        wd['outer'] = new_outer
+
+    @staticmethod
+    def _bar_polygon(cx, cy, half_w, half_h, angle_deg):
+        rad   = math.radians(angle_deg)
+        cos_a = math.cos(rad)
+        sin_a = math.sin(rad)
+        corners = [(-half_w, -half_h), (half_w, -half_h),
+                   ( half_w,  half_h), (-half_w,  half_h)]
+        return [(x * cos_a - y * sin_a + cx,
+                 x * sin_a + y * cos_a + cy) for x, y in corners]
+
+    @staticmethod
+    def _in_rotated_bar(px, py, cx, cy, half_w, half_h, angle_deg):
+        rad = math.radians(-angle_deg)
+        dx, dy = px - cx, py - cy
+        lx = dx * math.cos(rad) - dy * math.sin(rad)
+        ly = dx * math.sin(rad) + dy * math.cos(rad)
+        return abs(lx) <= half_w and abs(ly) <= half_h
+
+    def _draw_word(self, surface, wd, local):
+        cy       = wd['cy']
+        bar_half = wd['bar_half']
+        angle    = wd['angle']
+        cx       = C.SCREEN_W // 2
+        half_w   = C.SCREEN_W // 2 + 160
+
+        # Bar expansion (ease-out quad)
+        p = min(1.0, local / self._BAR_EXPAND_DUR)
+        cur_half = int(bar_half * (1 - (1 - p) ** 2))
+
+        # ── Outer sparks (drawn before bar so bar sits on top of origin point) ──
+        for pt in wd['outer']:
+            frac  = pt['life'] / pt['max_life']
+            alpha = int(255 * frac)
+            r     = max(1, int(4 * frac + 1))
+            px, py   = int(pt['x']), int(pt['y'])
+            ppx, ppy = int(pt['px']), int(pt['py'])
+            try:
+                # Draw as a line-streak for crackling look
+                if (px, py) != (ppx, ppy):
+                    length = max(abs(px - ppx), abs(py - ppy), 1)
+                    s = pygame.Surface((length + r * 2 + 4, r * 2 + 4), pygame.SRCALPHA)
+                    col_a = (*pt['col'], alpha)
+                    pygame.draw.line(s, col_a, (r + 2, r + 2),
+                                     (r + 2 + (px - ppx), r + 2 + (py - ppy)), max(1, r))
+                    surface.blit(s, (min(px, ppx) - r - 2, min(py, ppy) - r - 2))
+                else:
+                    s = pygame.Surface((r * 2 + 1, r * 2 + 1), pygame.SRCALPHA)
+                    pygame.draw.circle(s, (*pt['col'], alpha), (r, r), r)
+                    surface.blit(s, (px - r, py - r))
+            except Exception:
+                pass
+
+        # ── Black bar ─────────────────────────────────────────────────────────
+        if cur_half > 0:
+            pts = self._bar_polygon(cx, cy, half_w, cur_half, angle)
+            pygame.draw.polygon(surface, (0, 0, 0), pts)
+
+        # ── Inner trail particles (within rotated bar) ─────────────────────────
+        if cur_half > 0:
+            for pt in wd['inner']:
+                trail = pt['trail']
+                if not trail:
+                    continue
+                for i, tx in enumerate(trail):
+                    ty = pt['y']
+                    if not (0 < tx < C.SCREEN_W):
+                        continue
+                    if not self._in_rotated_bar(tx, ty, cx, cy, half_w, cur_half, angle):
+                        continue
+                    frac  = (i + 1) / len(trail)
+                    alpha = int(190 * frac)
+                    grey  = int(60 + 67 * frac)   # 50% darker
+                    try:
+                        s = pygame.Surface((3, 2), pygame.SRCALPHA)
+                        s.fill((grey, grey, grey, alpha))
+                        surface.blit(s, (int(tx), int(ty) - 1))
+                    except Exception:
+                        pass
+
+        # ── Text — scale-bounce on entry, rotated to match bar angle ──────────
+        if local < 0.22:
+            scale     = 1.0 + (2.0 - 1.0) * (1 - local / 0.22) ** 2
+            alpha_txt = int(255 * min(1.0, local / 0.22 * 1.8))
+        else:
+            scale     = 1.0
+            alpha_txt = 255
+
+        font      = fonts.serif(wd['fsize'], bold=True)
+        shadow_s  = font.render(wd['text'], True, (0, 0, 0))
+        text_s    = font.render(wd['text'], True, C.UI_GOLD)
+        tw, th    = text_s.get_size()
+        sw, sh    = max(1, int(tw * scale)), max(1, int(th * scale))
+        shadow_sc = pygame.transform.smoothscale(shadow_s, (sw, sh))
+        text_sc   = pygame.transform.smoothscale(text_s,   (sw, sh))
+
+        shadow_rot = pygame.transform.rotate(shadow_sc, -angle)
+        text_rot   = pygame.transform.rotate(text_sc,   -angle)
+        text_rot.set_alpha(alpha_txt)
+        shadow_rot.set_alpha(alpha_txt)
+
+        rw, rh = text_rot.get_size()
+        dx = cx - rw // 2
+        dy = cy - rh // 2
+        # Layered shadow for depth: far offset + near offset, then text on top
+        surface.blit(shadow_rot, (dx + 8, dy + 8))
+        surface.blit(shadow_rot, (dx + 4, dy + 4))
+        surface.blit(text_rot,   (dx,     dy))
+
+    # ── public interface ──────────────────────────────────────────────────────
+
+    def update(self, dt):
+        self.elapsed += dt
+        if self.elapsed >= self._DONE_AT:
+            self.done = True
+            return
+
+        for wd in self._words:
+            local = self.elapsed - wd['enter_t']
+            if local < 0:
+                continue
+            # Fire sfx exactly once per word
+            key = wd['text']
+            if key not in self._sfx_fired:
+                sfx.play(wd['sfx'])
+                self._sfx_fired.add(key)
+                for _ in range(10):
+                    self._spawn_outer_spark(wd)
+            self._update_word(wd, dt)
+
+    def draw(self, surface, battle):
+        # ── Word bars + particles + text ─────────────────────────────────────
+        for wd in self._words:
+            local = self.elapsed - wd['enter_t']
+            if local < 0:
+                continue
+            self._draw_word(surface, wd, local)
+
+        # ── Black screen wipe from left (ease-out: fast left, decelerates right) ──
+        black_local = self.elapsed - self._BLACK_WIPE_START
+        if black_local > 0:
+            t = min(1.0, black_local / self._BLACK_WIPE_DUR)
+            # ease-out: 1 - (1-t)^1.6  → fast at start, slows toward right
+            wipe_x = int(C.SCREEN_W * (1.0 - (1.0 - t) ** 1.6))
+            if wipe_x > 0:
+                pygame.draw.rect(surface, (0, 0, 0), (0, 0, wipe_x, C.SCREEN_H))
+
+        # ── Battle scene wipes in from the left ──────────────────────────────
+        reveal_local = self.elapsed - self._BATTLE_WIPE_START
+        if reveal_local > 0 and battle is not None:
+            t = min(1.0, reveal_local / self._BATTLE_WIPE_DUR)
+            # ease-out left→right: fast start, decelerates at right edge
+            clip_w = int(C.SCREEN_W * (1.0 - (1.0 - t) ** 1.4))
+            if clip_w > 0:
+                # Draw battle directly to the display surface within a clip rect so
+                # alpha compositing uses the display format (avoids white/black sprite halos
+                # that appear when blitting convert_alpha() surfaces to an unconverted tmp).
+                surface.set_clip(pygame.Rect(0, 0, clip_w, C.SCREEN_H))
+                battle.draw(target=surface)
+                surface.set_clip(None)
+
+
 class Game:
     TITLE_FADE_IN_SEC = 1.0
     SAVE_OPEN_SEC     = 0.32   # save panel open animation duration
@@ -304,6 +598,7 @@ class Game:
         self.battle = None
         self.overworld = None
         self.transition = None
+        self.intro_sequence = None
 
         # Intro
         self.intro = IntroSequence()
@@ -324,7 +619,7 @@ class Game:
 
     def handle_event(self, event):
         if self.state == GameState.INTRO:
-            if event.type == pygame.KEYDOWN:
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_x:
                 self.intro.skip()
             return
 
@@ -351,6 +646,7 @@ class Game:
             if event.key in (pygame.K_z, pygame.K_RETURN, pygame.K_SPACE):
                 self.title_substate = TitleSubstate.SAVE
                 self.save_open_t    = 0.0
+                sfx.play('ui_dialog_open')
             return
 
         if self.title_substate == TitleSubstate.SAVE:
@@ -358,10 +654,12 @@ class Game:
             if self.save_open_t < 0.6:
                 return
             if event.key in (pygame.K_z, pygame.K_RETURN, pygame.K_SPACE):
+                sfx.play('ui_confirm')
                 self._begin_loading_to_overworld()
             elif event.key in (pygame.K_x, pygame.K_ESCAPE):
                 self.title_substate = TitleSubstate.PROMPT
                 self.save_open_t    = 0.0
+                sfx.play('ui_cancel')
             return
 
     def update(self, dt):
@@ -395,13 +693,18 @@ class Game:
             if self.overworld.quit_to_title:
                 self.overworld = None
                 self.state = GameState.TITLE
+            elif self.overworld.map_transition:
+                dest, spawn = self.overworld.map_transition
+                self.overworld.load_map(dest, spawn)
             elif self.overworld.start_battle:
                 self._begin_transition_to_battle()
 
-        elif self.state == GameState.TRANSITION and self.transition:
-            self.transition.update(dt)
-            if self.transition.done:
-                self._start_battle_from_overworld()
+        elif self.state == GameState.BATTLE_INTRO:
+            self.intro_sequence.update(dt)
+            if self.intro_sequence.done:
+                self.intro_sequence = None
+                self.state = GameState.BATTLE
+                self.battle._open_custom_screen()
 
         elif self.state == GameState.BATTLE and self.battle:
             self.battle.update(dt)
@@ -417,8 +720,9 @@ class Game:
             self.loading.draw(self.screen)
         elif self.state == GameState.OVERWORLD and self.overworld:
             self.overworld.draw()
-        elif self.state == GameState.TRANSITION and self.transition:
-            self.transition.draw(self.screen)
+        elif self.state == GameState.BATTLE_INTRO:
+            self.overworld.draw()
+            self.intro_sequence.draw(self.screen, self.battle)
         elif self.state == GameState.BATTLE and self.battle:
             self.battle.draw()
 
@@ -443,7 +747,7 @@ class Game:
     def _start_overworld(self):
         self.loading = None
         self.state = GameState.OVERWORLD
-        self.overworld = Overworld(self.screen)
+        self.overworld = Overworld(self.screen, map_name='cardhollow', spawn_key='default')
         self._start_dojo_music()
 
     def _start_battle_direct(self):
@@ -453,22 +757,18 @@ class Game:
         self._start_battle_music()
 
     def _begin_transition_to_battle(self):
-        """Snapshot the overworld and start the FF-style transition."""
-        # Fade out the dojo music as the transition begins.
-        self._stop_music(fade_ms=500)
-        # Make sure the overworld has rendered its current frame to the screen.
-        self.overworld.draw()
-        self.transition = BattleTransition(self.screen)
-        self.state = GameState.TRANSITION
-        # Don't reset overworld.start_battle yet — _start_battle_from_overworld does it
-        # once the transition finishes.
-
-    def _start_battle_from_overworld(self):
-        self.state = GameState.BATTLE
-        self.battle = Battle(self.screen, folder=self.overworld.folder)
+        """Play SHUFFLE/DEAL/DRAW! overlay on the overworld, then wipe into battle."""
+        sfx.play('battleintro1', 1.0)
+        sfx.play('battleintro2', 1.0)
+        self._stop_music(fade_ms=600)
         self.overworld.start_battle = False
-        self.transition = None
+        # Pre-create the battle (starts in CUSTOM state — no OPENING) so the
+        # reveal wipe can draw it live during the intro sequence.
+        self.battle = Battle(self.screen, folder=self.overworld.folder,
+                             skip_opening=True)
         self._start_battle_music()
+        self.intro_sequence = BattleIntroSequence()
+        self.state = GameState.BATTLE_INTRO
 
     def _handle_battle_finished(self):
         """Battle ended — `next_action` on the Battle tells us what to do."""

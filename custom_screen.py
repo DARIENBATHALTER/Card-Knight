@@ -11,6 +11,7 @@ import constants as C
 import fonts
 from chips import can_add_chip, check_program_advance
 import sprite_manager as SM
+import sfx
 
 # ── Layout constants ──────────────────────────────────────────────────────────
 PAD          = 8
@@ -69,7 +70,28 @@ CLS_TILE_COLOR = {
 }
 
 
+def _fill_chip_icon(surface, chip, x, y, w, h):
+    """Scale chip icon to fill (x, y, w, h) preserving aspect ratio, centered."""
+    icons = SM.get('chip_icons') or {}
+    icon  = icons.get(chip.name.lower())
+    if icon:
+        iw, ih = icon.get_size()
+        scale  = min(w / max(iw, 1), h / max(ih, 1))
+        dw, dh = max(1, int(iw * scale)), max(1, int(ih * scale))
+        scaled = pygame.transform.smoothscale(icon, (dw, dh))
+        surface.blit(scaled, (x + (w - dw) // 2, y + (h - dh) // 2))
+    else:
+        _draw_chip_icon_cs(surface, chip, x + w // 2, y + h // 2, min(w, h) * 2 // 3)
+
+
 def _draw_chip_icon_cs(surface, chip, cx, cy, size=12):
+    icons = SM.get('chip_icons') or {}
+    icon  = icons.get(chip.name.lower())
+    if icon:
+        scaled = pygame.transform.smoothscale(icon, (size, size))
+        surface.blit(scaled, (cx - size // 2, cy - size // 2))
+        return
+    # Procedural fallback
     if chip.heals:
         r = max(2, size // 3)
         pygame.draw.circle(surface, (220, 60, 80), (cx - r // 2, cy - 1), r)
@@ -138,13 +160,16 @@ class CustomScreen:
                 last_row_start = (SLOT_ROWS - 1) * SLOT_COLS
                 self.cursor = min(n - 1, last_row_start if event.key == pygame.K_LEFT
                                   else last_row_start + (self.cursor % SLOT_COLS))
+                sfx.play('deal')
             elif event.key == pygame.K_RIGHT:
                 self.ok_focused = False
                 last_row_start = (SLOT_ROWS - 1) * SLOT_COLS
                 self.cursor = min(n - 1, last_row_start + 1)
+                sfx.play('deal')
             return
 
         # Normal card-grid navigation
+        prev_cursor = self.cursor
         if event.key == pygame.K_LEFT:
             if self.cursor % SLOT_COLS > 0:
                 self.cursor -= 1
@@ -161,27 +186,38 @@ class CustomScreen:
                 self.cursor = new
             else:
                 self.ok_focused = True   # fall through to OK button
+                sfx.play('deal')
+                return
         elif event.key in (pygame.K_z, pygame.K_x, pygame.K_RETURN):
             self._try_select(self.cursor)
+            return
+        if self.cursor != prev_cursor:
+            sfx.play('deal')
 
     def _try_select(self, idx):
         if idx in self.selected_indices:
             if self.selected_indices and self.selected_indices[-1] == idx:
                 self.selected_indices.pop()
                 self.pa_chip = None
+                sfx.play('ui_cancel')
             return
         if len(self.selected_indices) >= self.MAX_SELECTABLE:
+            sfx.play('ui_cancel')
             return
         chip = self.chips[idx]
         selected_chips = [self.chips[i] for i in self.selected_indices]
         if can_add_chip(selected_chips, chip):
             self.selected_indices.append(idx)
+            sfx.play('card_select')
             self.pa_chip = check_program_advance(
                 [self.chips[i] for i in self.selected_indices]
             )
+        else:
+            sfx.play('ui_cancel')
 
     def _confirm(self):
         # Start the slide-out animation; `done` will flip when slide_t hits 0.
+        sfx.play('shuffle')
         self.closing = True
 
     def get_selected_chips(self):
@@ -307,9 +343,10 @@ class CustomScreen:
         art_bg = tuple(min(255, c + 20) for c in eb)
         pygame.draw.rect(surface, art_bg, art_rect, border_radius=3)
         pygame.draw.rect(surface, C.UI_DARK_GOLD, art_rect, 1, border_radius=3)
-        icon_cx = x + w // 2
-        icon_cy = art_y + art_h // 2
-        _draw_chip_icon_cs(surface, chip, icon_cx, icon_cy, min(80, art_h * 2 // 3))
+        # Fill the art rect with the chip icon at its natural 3:4 portrait ratio
+        _fill_chip_icon(surface, chip,
+                        art_rect.x + 3, art_rect.y + 3,
+                        art_rect.w - 6, art_rect.h - 6)
 
         # Class + damage row
         stat_y = art_y + art_h + 6
@@ -369,17 +406,23 @@ class CustomScreen:
             surface.blit(ns2, (x + 6, info_y))
             info_y += 14
 
-        # Large code letter anchored to bottom of preview
+        # Large code letter anchored to bottom of preview — prominent pill
         cc = C.CYAN if chip.code == "*" else C.UI_GOLD
-        code_big = fonts.pixel(22, bold=True).render(chip.code, True, cc)
-        surface.blit(code_big, (x + w - code_big.get_width() - 8,
-                                 y + h - code_big.get_height() - 8))
+        code_big = fonts.pixel(28, bold=True).render(chip.code, True, cc)
+        pill_x = x + w - code_big.get_width() - 20
+        pill_y = y + h - code_big.get_height() - 14
+        pill_rect = pygame.Rect(pill_x - 5, pill_y - 3,
+                                code_big.get_width() + 18, code_big.get_height() + 8)
+        pygame.draw.rect(surface, (8, 8, 24), pill_rect, border_radius=5)
+        pygame.draw.rect(surface, cc, pill_rect, 2, border_radius=5)
+        surface.blit(code_big, (pill_x + 4, pill_y))
 
     def _draw_slot(self, surface, chip, idx, x, y):
         is_selected = idx in self.selected_indices
         is_cursor   = idx == self.cursor
         can_sel     = self.can_select(idx)
 
+        # Background
         eb = ELEM_BG.get(chip.element, (40, 36, 68))
         if not can_sel:
             eb = (18, 16, 28)
@@ -387,34 +430,48 @@ class CustomScreen:
             eb = tuple(min(255, c + 40) for c in eb)
         pygame.draw.rect(surface, eb, pygame.Rect(x, y, SLOT_W, SLOT_H), border_radius=3)
 
+        # Class-colour stripe along the top edge
         stripe = CLS_COLOR.get(chip.chip_class, C.WHITE) if can_sel else (35, 33, 48)
         pygame.draw.rect(surface, stripe, pygame.Rect(x, y, SLOT_W, 3), border_radius=3)
 
         nc = C.WHITE if can_sel else (55, 52, 70)
 
-        # Code badge (top-right small diamond)
-        bx, by_b = x + SLOT_W - 12, y + 10
-        pts = [(bx, by_b - 8), (bx + 8, by_b), (bx, by_b + 8), (bx - 8, by_b)]
-        pygame.draw.polygon(surface, (25, 70, 165) if can_sel else (25, 25, 40), pts)
-        pygame.draw.polygon(surface, C.UI_GOLD if can_sel else C.UI_DARK_GOLD, pts, 1)
-        cc = C.CYAN if chip.code == "*" else C.WHITE
-        cs = fonts.pixel(6, bold=True).render(chip.code, True, cc if can_sel else (55, 52, 70))
-        surface.blit(cs, (bx - cs.get_width()//2, by_b - cs.get_height()//2))
+        # Card name
+        ns = fonts.serif(12, bold=True).render(chip.name[:10], True, nc)
+        surface.blit(ns, (x + 5, y + 6))
 
-        # Name
-        ns = fonts.serif(11, bold=True).render(chip.name[:10], True, nc)
-        surface.blit(ns, (x + 4, y + 5))
-
-        # Art thumbnail area
-        art_top = y + 24
-        art_h_s = SLOT_H - 56   # name(24) + bottom stats(32)
-        art_rect = pygame.Rect(x + 4, art_top, SLOT_W - 8, art_h_s)
+        # Art area — fills the space between name and bottom strip
+        BOTTOM_H = 34
+        art_top = y + 22
+        art_h_s = SLOT_H - 22 - BOTTOM_H
+        art_rect = pygame.Rect(x + 3, art_top, SLOT_W - 6, art_h_s)
         art_bg = tuple(min(255, c + 18) for c in eb) if can_sel else (22, 20, 34)
         pygame.draw.rect(surface, art_bg, art_rect, border_radius=2)
-        pygame.draw.rect(surface, C.UI_DARK_GOLD if can_sel else (30, 28, 42), art_rect, 1, border_radius=2)
-        icon_size = min(56, art_h_s * 2 // 3)
-        _draw_chip_icon_cs(surface, chip, art_rect.centerx, art_rect.centery, icon_size)
-        # Damage overlaid bottom-right of art
+        pygame.draw.rect(surface, C.UI_DARK_GOLD if can_sel else (30, 28, 42),
+                         art_rect, 1, border_radius=2)
+
+        # Icon fills art area, aspect-ratio preserved (icons are 3:4 portrait)
+        _fill_chip_icon(surface, chip,
+                        art_rect.x + 2, art_rect.y + 2,
+                        art_rect.w - 4, art_rect.h - 4)
+
+        # ── Bottom strip: prominent code pill + damage value ─────────────────
+        strip_y = y + SLOT_H - BOTTOM_H + 3
+        cc = C.CYAN if chip.code == "*" else C.UI_GOLD
+
+        # Code letter — prominent pill
+        code_s = fonts.pixel(14, bold=True).render(chip.code, True,
+                                                    cc if can_sel else (55, 52, 70))
+        pill_rect = pygame.Rect(x + 4, strip_y,
+                                code_s.get_width() + 10, code_s.get_height() + 4)
+        pygame.draw.rect(surface, (10, 10, 26) if can_sel else (10, 10, 18),
+                         pill_rect, border_radius=4)
+        pygame.draw.rect(surface, cc if can_sel else (40, 38, 55),
+                         pill_rect, 1, border_radius=4)
+        surface.blit(code_s, (pill_rect.x + 5, pill_rect.y + 2))
+
+        # Damage / heal next to code pill
+        val_x = pill_rect.right + 5
         if chip.heals:
             vt, val_c = f"+{chip.heals}", ((80, 240, 80) if can_sel else nc)
         elif chip.damage:
@@ -422,27 +479,19 @@ class CustomScreen:
         else:
             vt, val_c = "", nc
         if vt:
-            vs = fonts.serif(12, bold=True).render(vt, True, val_c)
-            surface.blit(vs, (art_rect.right - vs.get_width() - 3,
-                              art_rect.bottom - vs.get_height() - 2))
+            vs = fonts.serif(13, bold=True).render(vt, True, val_c)
+            mid_y = strip_y + (pill_rect.height - vs.get_height()) // 2
+            surface.blit(vs, (val_x, mid_y))
 
-        # Class letter + element tag at bottom
-        cls_s = fonts.pixel(6, bold=True).render(chip.chip_class, True,
-                                                  CLS_COLOR.get(chip.chip_class, nc) if can_sel else nc)
-        surface.blit(cls_s, (x + 4, y + SLOT_H - 24))
-        en = C.ELEM_NAME.get(chip.element, "")
-        if en:
-            ec = C.ELEM_COLOR.get(chip.element, nc) if can_sel else nc
-            es = fonts.pixel(6).render(en, True, ec)
-            surface.blit(es, (x + 4, y + SLOT_H - 14))
-
-        # Selection badge (bottom-right circle)
+        # Selection order badge — right side of bottom strip
         if is_selected:
             order = self.selected_indices.index(idx) + 1
-            pygame.draw.circle(surface, C.ORANGE, (x + SLOT_W - 12, y + SLOT_H - 12), 9)
+            badge_cx = x + SLOT_W - 11
+            badge_cy = strip_y + pill_rect.height // 2
+            pygame.draw.circle(surface, C.ORANGE, (badge_cx, badge_cy), 9)
             bs = fonts.pixel(7, bold=True).render(str(order), True, C.WHITE)
-            surface.blit(bs, (x + SLOT_W - 12 - bs.get_width()//2,
-                              y + SLOT_H - 12 - bs.get_height()//2))
+            surface.blit(bs, (badge_cx - bs.get_width() // 2,
+                              badge_cy - bs.get_height() // 2))
 
         # Border
         bc = C.WHITE if is_cursor else (C.UI_GOLD if is_selected else C.UI_DARK_GOLD)

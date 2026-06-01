@@ -1,81 +1,72 @@
 """
-Flat overworld — large scrollable world built on a single background image.
-Rocks, trees, and other props will be placed on top later.
+Isometric tile-based overworld — multi-map, smooth 8-directional movement.
+Maps defined in map_defs.py. Exit tiles trigger seamless map transitions.
 """
 from __future__ import annotations
 import math
-import os
 import pygame
 import constants as C
 import fonts
 import sprite_manager as SM
+import sfx
+import gamepad
+import story
+import map_defs
 from chips import make_sample_folder
 
-_BASE    = os.path.dirname(os.path.abspath(__file__))
-_BG_PATH = os.path.join(_BASE, 'assets', 'overworld', 'dojo.png')
+# ── Render constants ──────────────────────────────────────────────────────────
 
-# ── World constants ────────────────────────────────────────────────────────────
-WORLD_SCALE    = 1.0    # dojo.png is already 1280×720 — no upscaling
-PLAYER_SPEED   = 180    # world px / second
-CHAR_H         = 88     # target character render height (taller — single-screen scene)
-ENCOUNTER_DIST = 70     # world px — battle triggers inside this radius
-TALK_DIST      = 90     # world px — TALK prompt visible inside this radius
+RENDER_SCALE         = 2       # multiply map_defs tile_w/h/wall_h by this
+PLAYER_SPEED         = 4.2     # tiles per second (matches ~180 px/s at tile_h=48)
+CHAR_H               = 88      # sprite render height in pixels
+TALK_DIST_TILES      = 1.8     # show TALK prompt within this tile distance
+ENCOUNTER_DIST_TILES = 1.4     # battle triggers within this distance
+EXIT_TRIGGER_DIST    = 0.75    # exit fires when player is this close (tiles)
 
-# ── Cached scaled background (avoids re-scaling on every overworld init) ──────
-_bg_surf:  pygame.Surface | None = None
-_bg_scale: float = 0.0
+# Set of map names that are interiors (for door rendering + sound)
+_INTERIOR_MAPS = frozenset({'home', 'courier', 'store', 'edric', 'dojo', 'inn'})
 
+# ── Tile colour palettes ──────────────────────────────────────────────────────
 
-def _get_bg() -> pygame.Surface | None:
-    global _bg_surf, _bg_scale
-    if _bg_surf is not None and _bg_scale == WORLD_SCALE:
-        return _bg_surf
-    try:
-        from PIL import Image as PILImage
-        import io
-        pil = PILImage.open(_BG_PATH).convert('RGB')
-        iw, ih = pil.size
-        tw, th = int(iw * WORLD_SCALE), int(ih * WORLD_SCALE)
-        pil    = pil.resize((tw, th), PILImage.LANCZOS)
-        raw    = pygame.image.frombytes(pil.tobytes(), (tw, th), 'RGB').convert()
-        _bg_surf  = raw
-        _bg_scale = WORLD_SCALE
-    except Exception as e:
-        print(f"[overworld] bg load failed: {e}")
-        _bg_surf = None
-    return _bg_surf
+# Border/structural walls (stone, gray)
+_WALL_TOP   = (112, 105,  95)
+_WALL_LEFT  = ( 80,  74,  66)
+_WALL_RIGHT = ( 96,  90,  80)
 
+# Building walls (warm tan — detected by having at least one non-wall neighbor)
+_BLDG_TOP   = (198, 172, 138)
+_BLDG_LEFT  = (158, 132, 100)
+_BLDG_RIGHT = (178, 152, 118)
 
-# ── Entity records ─────────────────────────────────────────────────────────────
+_TILE_TOP = {
+    map_defs.TILE_GRASS: ( 72, 120,  55),
+    map_defs.TILE_WALL:  _WALL_TOP,
+    map_defs.TILE_WATER: ( 50, 120, 180),
+    map_defs.TILE_PATH:  (160, 148, 110),
+    map_defs.TILE_DIRT:  (140, 115,  80),
+}
+_TILE_LEFT = {
+    map_defs.TILE_GRASS: ( 55,  95,  42),
+    map_defs.TILE_WALL:  _WALL_LEFT,
+    map_defs.TILE_WATER: ( 38,  95, 150),
+    map_defs.TILE_PATH:  (130, 118,  85),
+    map_defs.TILE_DIRT:  (112,  90,  62),
+}
+_TILE_RIGHT = {
+    map_defs.TILE_GRASS: ( 62, 108,  48),
+    map_defs.TILE_WALL:  _WALL_RIGHT,
+    map_defs.TILE_WATER: ( 44, 108, 165),
+    map_defs.TILE_PATH:  (145, 132,  98),
+    map_defs.TILE_DIRT:  (126, 102,  70),
+}
 
-class OWEnemy:
-    """Overworld enemy that steps between waypoints."""
-    def __init__(self, waypoints, interval=1.1):
-        self.waypoints = [(float(x), float(y)) for x, y in waypoints]
-        self.x, self.y = self.waypoints[0]
-        self.alive     = True
-        self._wp_idx   = 0
-        self._timer    = 0.0
-        self.interval  = interval
+# ── Iso helper ────────────────────────────────────────────────────────────────
 
-    def update(self, dt):
-        if not self.alive:
-            return
-        self._timer -= dt
-        if self._timer <= 0:
-            self._timer    = self.interval
-            self._wp_idx   = (self._wp_idx + 1) % len(self.waypoints)
-            self.x, self.y = self.waypoints[self._wp_idx]
+def _iso(col, row, hw, hh, ox, oy):
+    return ((col - row) * hw + ox, (col + row) * hh + oy)
 
 
-class OWNPC:
-    def __init__(self, x, y, name, color, dialog):
-        self.x      = float(x)
-        self.y      = float(y)
-        self.name   = name
-        self.color  = color
-        self.dialog = dialog
-
+# ── State enum ────────────────────────────────────────────────────────────────
 
 class OWState:
     WALK    = "walk"
@@ -84,118 +75,277 @@ class OWState:
     LIBRARY = "library"
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Entity records ────────────────────────────────────────────────────────────
 
-def _dist(ax, ay, bx, by):
-    return math.hypot(ax - bx, ay - by)
+class OWEnemy:
+    def __init__(self, waypoints, interval=1.1):
+        self.waypoints = [(float(c), float(r)) for c, r in waypoints]
+        self.col, self.row = self.waypoints[0]
+        self.alive    = True
+        self._wp_idx  = 0
+        self._timer   = 0.0
+        self.interval = interval
+
+    def update(self, dt):
+        if not self.alive:
+            return
+        self._timer -= dt
+        if self._timer <= 0:
+            self._timer  = self.interval
+            self._wp_idx = (self._wp_idx + 1) % len(self.waypoints)
+            self.col, self.row = self.waypoints[self._wp_idx]
 
 
-def _w(ix, iy):
-    """Convert image-space coordinates to world-space at WORLD_SCALE."""
-    return (ix * WORLD_SCALE, iy * WORLD_SCALE)
+class OWNPC:
+    def __init__(self, col, row, name, color, dialog_fn):
+        self.col       = float(col)
+        self.row       = float(row)
+        self.name      = name
+        self.color     = color
+        self.dialog_fn = dialog_fn
+
+    def lines(self):
+        return self.dialog_fn()
 
 
 # ── Main class ────────────────────────────────────────────────────────────────
 
 class Overworld:
-    def __init__(self, screen, folder=None):
+    def __init__(self, screen, folder=None, map_name='cardhollow', spawn_key='default'):
         self.screen = screen
         self.folder = folder if folder is not None else make_sample_folder()
 
-        # Background
-        bg = _get_bg()
-        self.world_w = bg.get_width()  if bg else C.SCREEN_W * 3
-        self.world_h = bg.get_height() if bg else C.SCREEN_H * 3
+        self.state          = OWState.WALK
+        self.start_battle   = False
+        self.quit_to_title  = False
+        self.map_transition = None
 
-        # ── Dojo layout ──────────────────────────────────────────────────────
-        # Image is 1280×720 — coordinates are direct screen-space.
-        # The duel mat (light tile area) center is at roughly (640, 420).
-        # Player spawns just south of the central enemy.
-        self.player_x, self.player_y = _w(640, 540)
+        self._pause_opts    = ["Resume", "Chip Library", "Quit to Title", "Quit Game"]
+        self._pause_cursor  = 0
+        self._lib_scroll    = 0
+        self._LIB_ROWS      = 8
+        self._timer         = 0.0
+        self._moving        = False
+        self._direction     = 'south'
+        self._grace_timer   = 0.0
+        self._active_npc    = None
+        self._dialog_npc_name = ''
+        self._dialog_page   = 0
+        self._battle_enemy  = None
+        self._block_msg     = ''
+        self._block_timer   = 0.0
 
-        # ── NPCs ──────────────────────────────────────────────────────────────
-        self.npcs = [
-            OWNPC(*_w(1020, 410), "Sage Hanzo", (180, 140, 220),
-                  ["Welcome to the Dueling Hall, Oden.",
-                   "Step onto the mat when you're ready.",
-                   "Defeat the training Misdeal and your",
-                   "deck will be sharper for it."]),
-        ]
-        self._active_npc = 0
-        self._dialog_page = 0
+        # Pixel coords for smooth movement on screen (derived from tile pos + camera)
+        # Actual logical position is (player_col, player_row) in tile space (floats).
+        self.player_col = 0.0
+        self.player_row = 0.0
 
-        # ── Enemies ───────────────────────────────────────────────────────────
-        # One stationary enemy on the center of the dueling mat.
-        self.enemies = [
-            OWEnemy([_w(640, 420)], interval=1.0),
-        ]
-        self._battle_enemy_idx = 0
+        self.load_map(map_name, spawn_key)
 
-        # State
-        self.state         = OWState.WALK
-        self.start_battle  = False
-        self.quit_to_title = False
+    # ── Map loading ───────────────────────────────────────────────────────────
 
-        # Pause
-        self._pause_opts   = ["Resume", "Chip Library", "Quit to Title"]
-        self._pause_cursor = 0
+    def load_map(self, map_name: str, spawn_key: str = 'default'):
+        self.map_transition = None
+        self.start_battle   = False
+        self.state          = OWState.WALK
+        self._grace_timer   = 0.6
+        self._battle_enemy  = None
+        self._active_npc    = None
+        self._dialog_page   = 0
 
-        # Library
-        self._lib_scroll = 0
-        self._LIB_ROWS   = 8
+        mdef = map_defs.MAPS[map_name]
+        self._map_name = map_name
+        self._grid     = mdef['grid']
+        self._rows     = len(self._grid)
+        self._cols     = max((len(r) for r in self._grid), default=0)
 
-        # Animation
-        self._timer       = 0.0
-        self._moving      = False
-        self._facing_left = False
+        # Scale tile dims from map_defs values
+        rs             = RENDER_SCALE
+        self._tile_w   = mdef['tile_w'] * rs
+        self._tile_h   = mdef['tile_h'] * rs
+        self._wall_h   = mdef['wall_h'] * rs
+        self._half_w   = self._tile_w // 2
+        self._half_h   = self._tile_h // 2
+
+        spawn = mdef['spawns'].get(spawn_key) or mdef['spawns'].get('default', (1, 1))
+        self.player_col = float(spawn[0])
+        self.player_row = float(spawn[1])
+
+        self.npcs    = []
+        self.enemies = []
+
+        for nd in mdef.get('npcs', []):
+            self.npcs.append(OWNPC(
+                nd['tile'][0], nd['tile'][1],
+                nd['name'], nd['color'], nd['dialog'],
+            ))
+
+        for ed in mdef.get('enemies', []):
+            if ed.get('story_trigger'):
+                if not (story.get('package_accepted') and not story.get('misdeal_road_beaten')):
+                    continue
+            self.enemies.append(OWEnemy(ed['waypoints'], ed.get('interval', 1.1)))
+
+        self._exits        = mdef.get('exits', [])
+        self._props        = mdef.get('props', [])
+        self._blocking_msg = mdef.get('blocking_msg', {})
+
+        # Precompute: which WALL tiles are building walls (warm tan) vs border/stone (gray).
+        # A building wall is an interior wall tile (not on the map perimeter) that has
+        # at least one non-wall neighbour (i.e. it faces open space).
+        self._building_walls: set[tuple[int, int]] = set()
+        for r in range(self._rows):
+            row = self._grid[r]
+            row_len = len(row)
+            for c in range(row_len):
+                if row[c] != map_defs.TILE_WALL:
+                    continue
+                # Skip the perimeter ring — those stay gray stone
+                if r == 0 or r == self._rows - 1 or c == 0 or c == row_len - 1:
+                    continue
+                for dc, dr in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    nr2, nc2 = r + dr, c + dc
+                    if 0 <= nr2 < self._rows and 0 <= nc2 < len(self._grid[nr2]):
+                        if self._grid[nr2][nc2] != map_defs.TILE_WALL:
+                            self._building_walls.add((c, r))
+                            break
+
+        # Which exit tiles lead to interior maps (for door rendering)
+        self._door_tiles: set[tuple[int, int]] = {
+            ex['tile'] for ex in self._exits if ex['dest'] in _INTERIOR_MAPS
+        }
+
+    # ── Camera ────────────────────────────────────────────────────────────────
+
+    def _get_origin(self):
+        px_sx = (self.player_col - self.player_row) * self._half_w
+        px_sy = (self.player_col + self.player_row) * self._half_h
+        return C.SCREEN_W // 2 - int(px_sx), C.SCREEN_H // 2 - int(px_sy)
 
     # ── Update ────────────────────────────────────────────────────────────────
 
     def update(self, dt):
-        self._timer += dt
+        self._timer      += dt
+        self._grace_timer = max(0.0, self._grace_timer - dt)
+        self._block_timer = max(0.0, self._block_timer - dt)
+
         if self.state == OWState.WALK:
             self._update_movement(dt)
+            if self.map_transition is None:
+                self._check_exits()
             for e in self.enemies:
                 e.update(dt)
             self._check_battle()
 
+    def _passable(self, col: int, row: int) -> bool:
+        if row < 0 or row >= self._rows:
+            return False
+        grid_row = self._grid[row]
+        if col < 0 or col >= len(grid_row):
+            return False
+        return grid_row[col] not in (map_defs.TILE_WALL, map_defs.TILE_WATER)
+
+    def _passable_float(self, col: float, row: float, radius: float = 0.32) -> bool:
+        for dc, dr in ((-radius, -radius), (radius, -radius),
+                       (-radius,  radius), (radius,  radius)):
+            if not self._passable(int(round(col + dc)), int(round(row + dr))):
+                return False
+        return True
+
     def _update_movement(self, dt):
         keys = pygame.key.get_pressed()
-        dx, dy = 0.0, 0.0
-        if keys[pygame.K_UP]:    dy -= 1
-        if keys[pygame.K_DOWN]:  dy += 1
-        if keys[pygame.K_LEFT]:  dx -= 1
-        if keys[pygame.K_RIGHT]: dx += 1
+        joy  = gamepad.active()
 
-        self._moving = (dx != 0 or dy != 0)
-        if dx > 0:  self._facing_left = True
-        elif dx < 0: self._facing_left = False
+        up    = keys[pygame.K_UP]    or 'up'    in joy
+        down  = keys[pygame.K_DOWN]  or 'down'  in joy
+        left  = keys[pygame.K_LEFT]  or 'left'  in joy
+        right = keys[pygame.K_RIGHT] or 'right' in joy
 
-        if not self._moving:
+        # Raw tile-space deltas (each key contributes -1/+1 to col and row)
+        raw_dc = (-1 if up else 0) + (1 if down else 0) + \
+                 (-1 if left else 0) + (1 if right else 0)
+        raw_dr = (-1 if up else 0) + (1 if down else 0) + \
+                 (1 if left else 0) + (-1 if right else 0)
+
+        if raw_dc == 0 and raw_dr == 0:
+            self._moving = False
             return
 
-        length = math.hypot(dx, dy) or 1.0
-        dx = dx / length * PLAYER_SPEED * dt
-        dy = dy / length * PLAYER_SPEED * dt
+        self._moving = True
 
-        margin = CHAR_H // 2
-        self.player_x = max(margin, min(self.world_w - margin, self.player_x + dx))
-        self.player_y = max(margin, min(self.world_h - margin, self.player_y + dy))
+        # 8-directional facing based on screen-space projection
+        sx_dir = raw_dc - raw_dr   # positive = screen-east
+        sy_dir = raw_dc + raw_dr   # positive = screen-south
+
+        if sx_dir > 0:
+            if sy_dir < 0:   self._direction = 'northeast'
+            elif sy_dir > 0: self._direction = 'southeast'
+            else:            self._direction = 'east'
+        elif sx_dir < 0:
+            if sy_dir < 0:   self._direction = 'northwest'
+            elif sy_dir > 0: self._direction = 'southwest'
+            else:            self._direction = 'west'
+        else:
+            if sy_dir < 0:   self._direction = 'north'
+            else:            self._direction = 'south'
+
+        # Normalize and scale by speed
+        length = math.hypot(raw_dc, raw_dr) or 1.0
+        dc = (raw_dc / length) * PLAYER_SPEED * dt
+        dr = (raw_dr / length) * PLAYER_SPEED * dt
+
+        nc = self.player_col + dc
+        nr = self.player_row + dr
+
+        # Slide collision: try full move, then axis-only
+        if self._passable_float(nc, nr):
+            self.player_col, self.player_row = nc, nr
+        elif self._passable_float(nc, self.player_row):
+            self.player_col = nc
+        elif self._passable_float(self.player_col, nr):
+            self.player_row = nr
+
+    def _check_exits(self):
+        """Fire a transition when the player walks close to an exit tile."""
+        if self._grace_timer > 0:
+            return
+        for ex in self._exits:
+            ec, er = ex['tile']
+            dist = math.hypot(self.player_col - ec, self.player_row - er)
+            if dist < EXIT_TRIGGER_DIST:
+                req = ex.get('req_flag')
+                if req and not story.get(req):
+                    key = ex['dest']
+                    self._block_msg = (
+                        self._blocking_msg.get(key) or
+                        self._blocking_msg.get('from_' + key.split('_')[0]) or
+                        "I can't go that way yet."
+                    )
+                    self._block_timer = 2.5
+                    return
+                self.map_transition = (ex['dest'], ex['spawn'])
+                return
 
     def _check_battle(self):
-        for i, e in enumerate(self.enemies):
-            if e.alive and _dist(self.player_x, self.player_y, e.x, e.y) <= ENCOUNTER_DIST:
-                self._battle_enemy_idx = i
-                self.start_battle = True
+        if self._grace_timer > 0:
+            return
+        for e in self.enemies:
+            if not e.alive:
+                continue
+            dist = math.hypot(self.player_col - e.col, self.player_row - e.row)
+            if dist <= ENCOUNTER_DIST_TILES:
+                self._battle_enemy = e
+                self.start_battle  = True
                 return
 
     def on_battle_end(self, player_won):
-        # Keep the dojo enemy alive — it's a training Misdeal, the player can
-        # walk back into it for repeated practice battles.
         self.start_battle = False
-        # Return Oden to his spawn so the encounter doesn't immediately re-fire.
-        self.player_x, self.player_y = _w(640, 540)
-        self._moving = False
+        self._grace_timer = 2.2
+        if player_won and self._battle_enemy:
+            if self._map_name == 'briar_road':
+                self._battle_enemy.alive = False
+                story.set_flag('misdeal_road_beaten')
+        self._battle_enemy = None
 
     # ── Events ────────────────────────────────────────────────────────────────
 
@@ -208,101 +358,154 @@ class Overworld:
             if k == pygame.K_ESCAPE:
                 self.state = OWState.PAUSE
                 self._pause_cursor = 0
+                sfx.play('ui_dialog_open')
             elif k in (pygame.K_z, pygame.K_RETURN):
                 self._try_talk()
 
         elif self.state == OWState.DIALOG:
             if k in (pygame.K_z, pygame.K_RETURN, pygame.K_SPACE, pygame.K_ESCAPE):
+                lines = self._active_npc.lines() if self._active_npc else []
                 self._dialog_page += 1
-                if self._dialog_page >= len(self.npcs[self._active_npc].dialog):
-                    self.state = OWState.WALK
+                if self._dialog_page >= len(lines):
+                    self._on_dialog_end(self._dialog_npc_name)
+                    self.state        = OWState.WALK
                     self._dialog_page = 0
+                    self._active_npc  = None
+                    sfx.play('ui_cancel')
+                else:
+                    sfx.play('ui_confirm')
 
         elif self.state == OWState.PAUSE:
             if k == pygame.K_UP:
+                prev = self._pause_cursor
                 self._pause_cursor = max(0, self._pause_cursor - 1)
+                if self._pause_cursor != prev:
+                    sfx.play('ui_cursor')
             elif k == pygame.K_DOWN:
+                prev = self._pause_cursor
                 self._pause_cursor = min(len(self._pause_opts) - 1, self._pause_cursor + 1)
+                if self._pause_cursor != prev:
+                    sfx.play('ui_cursor')
             elif k in (pygame.K_z, pygame.K_RETURN):
+                sfx.play('ui_confirm')
                 self._select_pause()
             elif k == pygame.K_ESCAPE:
                 self.state = OWState.WALK
+                sfx.play('ui_cancel')
 
         elif self.state == OWState.LIBRARY:
             if k == pygame.K_UP:
+                prev = self._lib_scroll
                 self._lib_scroll = max(0, self._lib_scroll - 1)
+                if self._lib_scroll != prev:
+                    sfx.play('ui_cursor')
             elif k == pygame.K_DOWN:
-                cap = max(0, len(self.folder) - self._LIB_ROWS)
+                cap  = max(0, len(self.folder) - self._LIB_ROWS)
+                prev = self._lib_scroll
                 self._lib_scroll = min(cap, self._lib_scroll + 1)
+                if self._lib_scroll != prev:
+                    sfx.play('ui_cursor')
             elif k in (pygame.K_ESCAPE, pygame.K_x, pygame.K_z):
                 self.state = OWState.PAUSE
+                sfx.play('ui_cancel')
 
     def _try_talk(self):
-        best, best_d = -1, TALK_DIST + 1
-        for i, npc in enumerate(self.npcs):
-            d = _dist(self.player_x, self.player_y, npc.x, npc.y)
+        best, best_d = None, TALK_DIST_TILES + 1
+        for npc in self.npcs:
+            d = math.hypot(self.player_col - npc.col, self.player_row - npc.row)
             if d < best_d:
-                best_d, best = d, i
-        if best >= 0:
-            self._active_npc  = best
-            self._dialog_page = 0
+                best_d, best = d, npc
+        if best is not None:
+            self._active_npc      = best
+            self._dialog_npc_name = best.name
+            self._dialog_page     = 0
             self.state = OWState.DIALOG
+            sfx.play('ui_dialog_open')
+
+    def _on_dialog_end(self, name: str):
+        """Set story flags after finishing NPC dialogue."""
+        if name == 'Courier Master' and not story.get('package_accepted'):
+            story.set_flag('package_accepted')
+        elif name == 'Edric':
+            if not story.get('met_edric'):
+                story.set_flag('met_edric')
+            if not story.get('received_deck'):
+                story.set_flag('received_deck')
 
     def _select_pause(self):
         if self._pause_cursor == 0:
             self.state = OWState.WALK
         elif self._pause_cursor == 1:
-            self.state = OWState.LIBRARY
+            self.state       = OWState.LIBRARY
             self._lib_scroll = 0
         elif self._pause_cursor == 2:
             self.quit_to_title = True
+        elif self._pause_cursor == 3:
+            pygame.event.post(pygame.event.Event(pygame.QUIT))
 
     # ── Draw ──────────────────────────────────────────────────────────────────
 
     def draw(self):
         surf = self.screen
+        surf.fill((22, 20, 32))
 
-        # ── Camera ────────────────────────────────────────────────────────────
-        cam_x = int(max(0, min(self.world_w - C.SCREEN_W,
-                               self.player_x - C.SCREEN_W / 2)))
-        cam_y = int(max(0, min(self.world_h - C.SCREEN_H,
-                               self.player_y - C.SCREEN_H / 2)))
+        ox, oy = self._get_origin()
+        hw, hh, wh = self._half_w, self._half_h, self._wall_h
 
-        # ── Background ────────────────────────────────────────────────────────
-        bg = _get_bg()
-        if bg:
-            surf.blit(bg, (-cam_x, -cam_y))
-        else:
-            surf.fill((45, 90, 40))
-
-        # ── Entities (painter's order: sort by y so closer = on top) ──────────
-        def _sy(obj):
-            return obj[1]   # sort by world-y
-
+        # Build painter-sorted draw list (depth = col + row)
         drawables = []
+
+        for r in range(self._rows):
+            row = self._grid[r]
+            for c in range(len(row)):
+                drawables.append((c + r,          'tile',   c,                r,                row[c]))
+
+        for prop in self._props:
+            pc, pr = prop['tile']
+            drawables.append((pc + pr + 0.4,       'prop',   pc,               pr,               prop['type']))
+
         for npc in self.npcs:
-            drawables.append(('npc', npc.x, npc.y, npc))
+            drawables.append((npc.col + npc.row + 0.6, 'npc', npc.col,          npc.row,          npc))
+
         for e in self.enemies:
             if e.alive:
-                drawables.append(('enemy', e.x, e.y, e))
-        drawables.append(('player', self.player_x, self.player_y, None))
-        drawables.sort(key=lambda d: d[2])   # painter's order by world-y
+                drawables.append((e.col + e.row + 0.6,  'enemy', e.col,         e.row,            e))
 
-        for kind, wx, wy, obj in drawables:
-            sx = int(wx - cam_x)
-            sy = int(wy - cam_y)
-            if -CHAR_H * 2 <= sx <= C.SCREEN_W + CHAR_H * 2 and \
-               -CHAR_H * 2 <= sy <= C.SCREEN_H + CHAR_H * 2:
-                if kind == 'player':
-                    self._draw_player(surf, sx, sy)
-                elif kind == 'npc':
-                    self._draw_npc(surf, sx, sy, obj, cam_x, cam_y)
-                elif kind == 'enemy':
-                    self._draw_enemy(surf, sx, sy, obj)
+        drawables.append((self.player_col + self.player_row + 0.6,
+                          'player', self.player_col, self.player_row, None))
 
-        # ── HUD overlays ──────────────────────────────────────────────────────
+        drawables.sort(key=lambda d: d[0])
+
+        cull_x0 = -hw * 5
+        cull_x1 = C.SCREEN_W + hw * 5
+        cull_y0 = -hh * 8
+        cull_y1 = C.SCREEN_H + wh * 6
+
+        for depth, kind, c, r, data in drawables:
+            sx = int((c - r) * hw + ox)
+            sy = int((c + r) * hh + oy)
+
+            if kind == 'tile':
+                if not (cull_x0 < sx < cull_x1 and cull_y0 < sy < cull_y1):
+                    continue
+                self._draw_tile(surf, sx, sy, data, hw, hh, wh, int(c), int(r))
+            elif kind == 'prop':
+                self._draw_prop(surf, sx, sy, data)
+            elif kind == 'npc':
+                self._draw_npc(surf, sx, sy, data)
+            elif kind == 'enemy':
+                self._draw_enemy(surf, sx, sy, data)
+            elif kind == 'player':
+                # Recompute exact float screen pos for player
+                psx = int((self.player_col - self.player_row) * hw + ox)
+                psy = int((self.player_col + self.player_row) * hh + oy)
+                self._draw_player(surf, psx, psy)
+
+        # HUD
         if self.state == OWState.WALK:
             self._draw_hints(surf)
+            if self._block_timer > 0 and self._block_msg:
+                self._draw_block_msg(surf)
         elif self.state == OWState.DIALOG:
             self._draw_dialog(surf)
         elif self.state == OWState.PAUSE:
@@ -310,100 +513,159 @@ class Overworld:
         elif self.state == OWState.LIBRARY:
             self._draw_library(surf)
 
+    # ── Tile rendering ────────────────────────────────────────────────────────
+
+    def _draw_tile(self, surf, sx, sy, tile_type, hw, hh, wh, col, row):
+        is_building = (col, row) in self._building_walls
+        is_door     = (col, row) in self._door_tiles
+
+        if tile_type == map_defs.TILE_WALL:
+            tc = _BLDG_TOP   if is_building else _WALL_TOP
+            lc = _BLDG_LEFT  if is_building else _WALL_LEFT
+            rc = _BLDG_RIGHT if is_building else _WALL_RIGHT
+
+            # Left face
+            pygame.draw.polygon(surf, lc, [
+                (sx - hw, sy),
+                (sx,      sy + hh),
+                (sx,      sy + hh + wh),
+                (sx - hw, sy      + wh),
+            ])
+            # Right face
+            pygame.draw.polygon(surf, rc, [
+                (sx,      sy + hh),
+                (sx + hw, sy),
+                (sx + hw, sy      + wh),
+                (sx,      sy + hh + wh),
+            ])
+            # Top diamond
+            top = [(sx, sy - hh), (sx + hw, sy), (sx, sy + hh), (sx - hw, sy)]
+            pygame.draw.polygon(surf, tc, top)
+            pygame.draw.polygon(surf, (0, 0, 0), top, 1)
+
+            # Door cutout on building wall's south-west face
+            if is_door:
+                dw = hw // 2
+                dh = int(wh * 0.65)
+                # Door arch on left face, centred
+                dlx = sx - hw + hw // 4
+                dly = sy + hh + wh - dh
+                pygame.draw.rect(surf, (38, 22, 10), (dlx, dly, dw, dh))
+                # Arch top (semicircle)
+                pygame.draw.ellipse(surf, (38, 22, 10),
+                                    (dlx, dly - dh // 4, dw, dh // 2))
+                # Door frame
+                pygame.draw.rect(surf, (80, 55, 30), (dlx, dly, dw, dh), 1)
+
+        else:
+            tc = _TILE_TOP.get(tile_type, (100, 100, 100))
+            top = [(sx, sy - hh), (sx + hw, sy), (sx, sy + hh), (sx - hw, sy)]
+            pygame.draw.polygon(surf, tc, top)
+
+            if tile_type == map_defs.TILE_WATER:
+                shimmer = int(25 + 20 * abs(
+                    math.sin(self._timer * 2.2 + col * 0.4 + row * 0.3)))
+                hl = tuple(min(255, x + shimmer) for x in tc)
+                pygame.draw.polygon(surf, hl, [
+                    (sx,           sy - hh),
+                    (sx + hw // 2, sy - hh // 2),
+                    (sx,           sy),
+                    (sx - hw // 2, sy - hh // 2),
+                ])
+
+            pygame.draw.polygon(surf, (0, 0, 0), top, 1)
+
+    def _draw_prop(self, surf, sx, sy, prop_type):
+        if   prop_type == 'shrine':        self._draw_shrine(surf, sx, sy, False)
+        elif prop_type == 'shrine_ruined': self._draw_shrine(surf, sx, sy, True)
+
+    def _draw_shrine(self, surf, cx, cy, ruined):
+        col = (75, 70, 65)   if ruined else (100, 95, 90)
+        cap = (100, 95, 90)  if ruined else (128, 122, 115)
+        pygame.draw.rect(surf, col, (cx - 14, cy - 34, 28, 26))
+        pts = [(cx - 16, cy - 34), (cx + 16, cy - 34), (cx, cy - 54)]
+        pygame.draw.polygon(surf, cap, pts)
+        pygame.draw.polygon(surf, (0, 0, 0), pts, 1)
+        if not ruined:
+            r = int(5 + math.sin(self._timer * 3.2) * 2)
+            pygame.draw.circle(surf, (55, 130, 255), (cx, cy - 46), r)
+            pygame.draw.circle(surf, (200, 225, 255), (cx, cy - 46), max(1, r - 2))
+
     # ── Entity drawing ────────────────────────────────────────────────────────
 
-    def _sprite_at(self, surf, sx, sy, frames, flip=False):
-        """Blit a sprite list (or single surface) centred at (sx, sy) feet."""
+    _DIAGONALS = frozenset({'northeast', 'northwest', 'southeast', 'southwest'})
+
+    def _sprite_at(self, surf, sx, sy, frames, scale_mul=1.0):
         if not frames:
             return
-        if isinstance(frames, list):
-            idx   = int(self._timer * 8) % len(frames)
-            frame = frames[idx]
-        else:
-            frame = frames
+        frame = frames[int(self._timer * 6) % len(frames)] if isinstance(frames, list) else frames
         fw, fh = frame.get_size()
-        # Scale to CHAR_H keeping aspect ratio
-        scale_f = CHAR_H / fh
-        dw, dh  = int(fw * scale_f), CHAR_H
-        frame   = pygame.transform.scale(frame, (dw, dh))
-        if flip:
-            frame = pygame.transform.flip(frame, True, False)
-        surf.blit(frame, (sx - dw // 2, sy - dh))
+        th     = int(CHAR_H * scale_mul)
+        dw     = int(fw * th / fh)
+        surf.blit(pygame.transform.scale(frame, (dw, th)), (sx - dw // 2, sy - th))
 
     def _draw_player(self, surf, sx, sy):
-        run_f  = SM.get('oden_run') if self._moving else None
-        idle_f = SM.get('oden_idle')
-        frames = run_f or idle_f
+        d  = self._direction
+        sm = 0.95 if d in self._DIAGONALS else 1.0
+        sr = int(18 * sm)
+        shadow = pygame.Surface((sr * 2, sr), pygame.SRCALPHA)
+        pygame.draw.ellipse(shadow, (0, 0, 0, 80), shadow.get_rect())
+        surf.blit(shadow, (sx - sr, sy - sr // 2))
+        frames = (SM.get(f'oden_walk_{d}') or SM.get('oden_run')) if self._moving \
+            else (SM.get(f'oden_idle_{d}') or SM.get('oden_idle'))
         if frames:
-            self._sprite_at(surf, sx, sy, frames, flip=self._facing_left)
+            self._sprite_at(surf, sx, sy, frames, sm)
         else:
-            # Placeholder
-            pygame.draw.ellipse(surf, (0, 0, 0), (sx - 12, sy - 3, 24, 8))
-            pygame.draw.rect(surf, C.BLUE, (sx - 7, sy - 30, 14, 20), border_radius=2)
-            pygame.draw.circle(surf, C.BLUE, (sx, sy - 38), 9)
-            pygame.draw.circle(surf, C.WHITE, (sx, sy - 38), 9, 2)
+            pygame.draw.ellipse(surf, (0, 0, 0),  (sx - 10, sy - 4, 20, 8))
+            pygame.draw.rect(   surf, C.BLUE,      (sx - 7,  sy - 30, 14, 20), border_radius=3)
+            pygame.draw.circle( surf, C.BLUE,      (sx, sy - 38), 9)
+            pygame.draw.circle( surf, C.WHITE,     (sx, sy - 38), 9, 2)
 
-    def _draw_npc(self, surf, sx, sy, npc, cam_x, cam_y):
-        # Robe-style placeholder (slightly wider body, no run frames)
+    def _draw_npc(self, surf, sx, sy, npc):
         bob  = int(math.sin(self._timer * 2.2) * 2)
         col  = npc.color
         lite = tuple(min(255, c + 50) for c in col)
-        pygame.draw.ellipse(surf, (0, 0, 0), (sx - 11, sy - 3, 22, 8))
-        pygame.draw.rect(surf, col, (sx - 9, sy - 30 + bob, 18, 22), border_radius=3)
-        pygame.draw.rect(surf, lite, (sx - 9, sy - 30 + bob, 18, 22), 1, border_radius=3)
-        pygame.draw.circle(surf, col, (sx, sy - 39 + bob), 10)
-        pygame.draw.circle(surf, lite, (sx, sy - 39 + bob), 10, 2)
-        # Face dots
-        pygame.draw.circle(surf, (255, 255, 255), (sx - 3, sy - 40 + bob), 2)
-        pygame.draw.circle(surf, (255, 255, 255), (sx + 3, sy - 40 + bob), 2)
-        # TALK prompt — serif chip in matching gold/navy style, just above the head
-        if _dist(self.player_x, self.player_y, npc.x, npc.y) <= TALK_DIST:
-            lbl_font = fonts.serif(14, bold=True)
-            lbl = lbl_font.render("TALK", True, C.UI_GOLD)
-            pad_x, pad_y = 9, 3
-            cw, ch = lbl.get_width() + pad_x * 2, lbl.get_height() + pad_y * 2
-            lx = sx - cw // 2
-            ly = sy - CHAR_H + 4   # lower than before — sits just above head
-            chip = pygame.Surface((cw, ch), pygame.SRCALPHA)
-            chip.fill((10, 14, 38, 235))
-            pygame.draw.rect(chip, C.UI_DARK_GOLD, chip.get_rect(),
-                             2, border_radius=4)
-            pygame.draw.rect(chip, C.UI_GOLD, chip.get_rect().inflate(-2, -2),
-                             1, border_radius=3)
-            chip.blit(lbl, (pad_x, pad_y))
-            surf.blit(chip, (lx, ly))
+        pygame.draw.ellipse(surf, (0, 0, 0), (sx - 9, sy - 4, 18, 8))
+        pygame.draw.rect(surf, col,  (sx - 8, sy - 28 + bob, 16, 20), border_radius=3)
+        pygame.draw.circle(surf, col,  (sx, sy - 34 + bob), 9)
+        pygame.draw.circle(surf, lite, (sx, sy - 34 + bob), 9, 1)
+        dist = math.hypot(self.player_col - npc.col, self.player_row - npc.row)
+        if dist <= TALK_DIST_TILES:
+            lf  = fonts.serif(13, bold=True)
+            lbl = lf.render("TALK", True, C.UI_GOLD)
+            px, py = 7, 2
+            cw     = lbl.get_width() + px * 2
+            ch     = lbl.get_height() + py * 2
+            chip   = pygame.Surface((cw, ch), pygame.SRCALPHA)
+            chip.fill((10, 14, 38, 215))
+            pygame.draw.rect(chip, C.UI_DARK_GOLD, chip.get_rect(), 2, border_radius=3)
+            chip.blit(lbl, (px, py))
+            surf.blit(chip, (sx - cw // 2, sy - CHAR_H))
 
     def _draw_enemy(self, surf, sx, sy, enemy):
-        bob = 1 if int(self._timer * 4) % 2 else 0
+        bob    = 1 if int(self._timer * 4) % 2 else 0
         frames = SM.get('gen_slime_idle')
         if frames:
             idx   = int(self._timer * 6) % len(frames)
             frame = frames[idx]
             fw, fh = frame.get_size()
-            eh    = int(CHAR_H * 0.75)
+            eh    = int(CHAR_H * 0.72)
             ew    = int(fw * eh / fh)
-            frame = pygame.transform.scale(frame, (ew, eh))
-            surf.blit(frame, (sx - ew // 2, sy - eh - bob))
+            surf.blit(pygame.transform.scale(frame, (ew, eh)), (sx - ew // 2, sy - eh - bob))
         else:
-            # Blob fallback
-            b = bob
-            pygame.draw.ellipse(surf, (0, 0, 0), (sx - 12, sy - 3, 24, 8))
-            pygame.draw.ellipse(surf, (30, 140, 40), (sx - 13, sy - 26 + b, 26, 22))
-            pygame.draw.ellipse(surf, (55, 190, 65), (sx - 10, sy - 28 + b, 20, 16))
-            pygame.draw.circle(surf, (255, 255, 255), (sx - 5, sy - 22 + b), 3)
-            pygame.draw.circle(surf, (255, 255, 255), (sx + 5, sy - 22 + b), 3)
-        # Warning exclamation — large serif "!" with bobbing motion + alert pulse
-        if _dist(self.player_x, self.player_y, enemy.x, enemy.y) <= ENCOUNTER_DIST * 3.5:
-            pulse    = int(self._timer * 5) % 2 == 0
-            warn_col = C.RED if pulse else C.YELLOW
-            warn_font = fonts.serif(36, bold=True)
-            shadow_s = warn_font.render("!", True, (10, 4, 4))
-            warn_s   = warn_font.render("!", True, warn_col)
-            bob = int(math.sin(self._timer * 6) * 2)
-            wx = sx - warn_s.get_width() // 2
-            wy = sy - CHAR_H - 28 + bob
-            surf.blit(shadow_s, (wx + 2, wy + 2))
-            surf.blit(warn_s,   (wx, wy))
+            pygame.draw.ellipse(surf, (0, 0, 0),    (sx - 11, sy - 4,  22, 8))
+            pygame.draw.ellipse(surf, (30, 140, 40), (sx - 12, sy - 22 + bob, 24, 20))
+            pygame.draw.ellipse(surf, (55, 190, 65), (sx - 8,  sy - 24 + bob, 16, 14))
+        dist = math.hypot(self.player_col - enemy.col, self.player_row - enemy.row)
+        if dist <= ENCOUNTER_DIST_TILES * 3.5:
+            pulse = int(self._timer * 5) % 2 == 0
+            wf    = fonts.serif(28, bold=True)
+            ws    = wf.render("!", True, C.RED if pulse else C.YELLOW)
+            ss    = wf.render("!", True, (10, 4, 4))
+            bobb  = int(math.sin(self._timer * 6) * 2)
+            wx, wy = sx - ws.get_width() // 2, sy - CHAR_H - 16 + bobb
+            surf.blit(ss, (wx + 1, wy + 1))
+            surf.blit(ws, (wx, wy))
 
     # ── HUD ───────────────────────────────────────────────────────────────────
 
@@ -412,66 +674,66 @@ class Overworld:
             "Arrows:Move  Z:Talk  Esc:Pause", True, (70, 65, 100))
         surf.blit(hint, (4, C.SCREEN_H - 11))
 
-    def _draw_dialog(self, surf):
-        npc = self.npcs[self._active_npc]
+    def _draw_block_msg(self, surf):
+        f   = fonts.serif(16)
+        s   = f.render(self._block_msg, True, C.UI_GOLD)
+        bx  = C.SCREEN_W // 2 - s.get_width() // 2 - 12
+        by  = C.SCREEN_H - 90
+        box = pygame.Surface((s.get_width() + 24, s.get_height() + 12), pygame.SRCALPHA)
+        box.fill((10, 14, 38, 215))
+        pygame.draw.rect(box, C.UI_DARK_GOLD, box.get_rect(), 2, border_radius=4)
+        surf.blit(box, (bx, by))
+        surf.blit(s, (bx + 12, by + 6))
 
-        # Box geometry — wide, tall, centered horizontally near the bottom
-        bw, bh = 1100, 168
+    def _draw_dialog(self, surf):
+        if self._active_npc is None:
+            return
+        lines = self._active_npc.lines()
+        if not lines or self._dialog_page >= len(lines):
+            return
+
+        bw, bh = 1100, 200
         bx = (C.SCREEN_W - bw) // 2
         by = C.SCREEN_H - bh - 32
 
-        # Backing — same recipe as the loading / save / victory chrome
         box = pygame.Surface((bw, bh), pygame.SRCALPHA)
         box.fill((10, 14, 38, 245))
         pygame.draw.rect(box, (24, 30, 70, 80),
                          pygame.Rect(8, 8, bw - 16, bh - 16), border_radius=6)
         pygame.draw.rect(box, C.UI_DARK_GOLD, box.get_rect(), 4, border_radius=8)
-        pygame.draw.rect(box, C.UI_GOLD,      box.get_rect().inflate(-4, -4),
-                         1, border_radius=6)
+        pygame.draw.rect(box, C.UI_GOLD, box.get_rect().inflate(-4, -4), 1, border_radius=6)
         surf.blit(box, (bx, by))
 
-        # Corner compass-rose ornaments
-        for (cx, cy) in ((bx + 22, by + 22), (bx + bw - 22, by + 22),
-                         (bx + 22, by + bh - 22), (bx + bw - 22, by + bh - 22)):
-            outer = [(cx, cy - 11), (cx + 11, cy), (cx, cy + 11), (cx - 11, cy)]
-            inner = [(cx + 4, cy - 4), (cx + 4, cy + 4),
-                     (cx - 4, cy + 4), (cx - 4, cy - 4)]
-            pygame.draw.polygon(surf, C.UI_GOLD, outer)
-            pygame.draw.polygon(surf, (10, 14, 38), inner)
+        for cx, cy in ((bx + 22, by + 22), (bx + bw - 22, by + 22),
+                       (bx + 22, by + bh - 22), (bx + bw - 22, by + bh - 22)):
+            pygame.draw.polygon(surf, C.UI_GOLD,
+                                [(cx, cy - 11), (cx + 11, cy), (cx, cy + 11), (cx - 11, cy)])
+            pygame.draw.polygon(surf, (10, 14, 38),
+                                [(cx + 4, cy - 4), (cx + 4, cy + 4),
+                                 (cx - 4, cy + 4), (cx - 4, cy - 4)])
             pygame.draw.circle(surf, C.UI_DARK_GOLD, (cx, cy), 2)
 
-        # Name — serif gold, large
-        name_font = fonts.serif(24, bold=True)
-        name_s = name_font.render(npc.name, True, C.UI_GOLD)
-        surf.blit(name_s, (bx + 36, by + 18))
+        surf.blit(fonts.serif(24, bold=True).render(self._active_npc.name, True, C.UI_GOLD),
+                  (bx + 36, by + 18))
 
-        # Page indicator (top-right)
-        pg_font = fonts.serif(13)
-        pg_s = pg_font.render(f"{self._dialog_page + 1} / {len(npc.dialog)}",
-                              True, (180, 165, 210))
+        pg_s = fonts.serif(13).render(
+            f"{self._dialog_page + 1} / {len(lines)}", True, (180, 165, 210))
         surf.blit(pg_s, (bx + bw - pg_s.get_width() - 36, by + 26))
 
-        # Gold rule with diamond endpoints + midpoint
-        rule_y = by + 56
+        ry  = by + 56
         rx0, rx1 = bx + 32, bx + bw - 32
-        pygame.draw.line(surf, C.UI_DARK_GOLD, (rx0, rule_y + 1), (rx1, rule_y + 1), 1)
-        pygame.draw.line(surf, C.UI_GOLD,      (rx0, rule_y),     (rx1, rule_y),     1)
+        pygame.draw.line(surf, C.UI_DARK_GOLD, (rx0, ry + 1), (rx1, ry + 1), 1)
+        pygame.draw.line(surf, C.UI_GOLD,      (rx0, ry),     (rx1, ry),     1)
         for dx in (rx0, (rx0 + rx1) // 2, rx1):
             pygame.draw.polygon(surf, C.UI_GOLD,
-                                [(dx, rule_y - 4), (dx + 4, rule_y),
-                                 (dx, rule_y + 4), (dx - 4, rule_y)])
+                                [(dx, ry - 4), (dx + 4, ry), (dx, ry + 4), (dx - 4, ry)])
 
-        # Body text — serif, larger, pixel-width wrap
-        body_font = fonts.serif(19)
-        line  = npc.dialog[self._dialog_page]
-        avail = bw - 72
-        rows  = self._wrap_text_px(line, body_font, avail)
-        text_y = rule_y + 16
-        for i, r in enumerate(rows[:3]):
-            ts = body_font.render(r, True, C.WHITE)
-            surf.blit(ts, (bx + 36, text_y + i * 26))
+        bf    = fonts.serif(19)
+        rows  = self._wrap_text_px(lines[self._dialog_page], bf, bw - 72)
+        ty    = ry + 16
+        for i, row_text in enumerate(rows[:4]):
+            surf.blit(bf.render(row_text, True, C.WHITE), (bx + 36, ty + i * 24))
 
-        # Continue indicator — pulsing gold triangle in bottom-right
         if int(self._timer * 3) % 2 == 0:
             ax, ay = bx + bw - 44, by + bh - 32
             pygame.draw.polygon(surf, C.UI_GOLD,
@@ -479,9 +741,7 @@ class Overworld:
 
     @staticmethod
     def _wrap_text_px(text, font, max_width):
-        words = text.split()
-        rows  = []
-        cur   = ""
+        words, rows, cur = text.split(), [], ""
         for w in words:
             test = (cur + " " + w).strip()
             if font.size(test)[0] <= max_width:
@@ -500,7 +760,8 @@ class Overworld:
         surf.blit(ov, (0, 0))
         mw = 170
         mh = 28 + len(self._pause_opts) * 26 + 8
-        mx, my = C.SCREEN_W // 2 - mw // 2, C.SCREEN_H // 2 - mh // 2
+        mx = C.SCREEN_W // 2 - mw // 2
+        my = C.SCREEN_H // 2 - mh // 2
         pygame.draw.rect(surf, C.UI_NAVY, (mx, my, mw, mh), border_radius=6)
         pygame.draw.rect(surf, C.UI_GOLD, (mx, my, mw, mh), 2, border_radius=6)
         ts = fonts.pixel(8, bold=True).render("PAUSE", True, C.UI_GOLD)
@@ -510,15 +771,13 @@ class Overworld:
             oy  = my + 28 + i * 26
             sel = i == self._pause_cursor
             if sel:
-                pygame.draw.rect(surf, C.UI_ACCENT,
-                                 (mx + 4, oy - 1, mw - 8, 22), border_radius=3)
+                pygame.draw.rect(surf, C.UI_ACCENT, (mx + 4, oy - 1, mw - 8, 22), border_radius=3)
             col = C.WHITE if sel else (90, 85, 120)
             surf.blit(fonts.pixel(8).render(opt, True, col), (mx + 14, oy + 3))
 
     def _draw_library(self, surf):
         surf.fill(C.UI_NAVY)
-        pygame.draw.rect(surf, C.UI_GOLD,
-                         (4, 4, C.SCREEN_W - 8, C.SCREEN_H - 8), 2, border_radius=4)
+        pygame.draw.rect(surf, C.UI_GOLD, (4, 4, C.SCREEN_W - 8, C.SCREEN_H - 8), 2, border_radius=4)
         ts = fonts.pixel(8, bold=True).render("CHIP LIBRARY", True, C.UI_GOLD)
         surf.blit(ts, (C.SCREEN_W // 2 - ts.get_width() // 2, 10))
         pygame.draw.line(surf, C.UI_DARK_GOLD, (8, 24), (C.SCREEN_W - 8, 24))
@@ -538,9 +797,9 @@ class Overworld:
             dmg = str(chip.damage) if chip.damage else (f"+{chip.heals}" if chip.heals else "—")
             cc  = C.CYAN if chip.code == "*" else C.UI_GOLD
             surf.blit(fonts.pixel(7, bold=True).render(chip.name[:12], True, C.WHITE), (12,  ry + 7))
-            surf.blit(fonts.mono(13).render(dmg,        True, C.WHITE),                (172, ry + 6))
-            surf.blit(fonts.mono(13).render(en,         True, ec),                     (216, ry + 6))
-            surf.blit(fonts.pixel(7).render(chip.code,  True, cc),                     (282, ry + 7))
+            surf.blit(fonts.mono(13).render(dmg,       True, C.WHITE),                (172, ry + 6))
+            surf.blit(fonts.mono(13).render(en,        True, ec),                     (216, ry + 6))
+            surf.blit(fonts.pixel(7).render(chip.code, True, cc),                     (282, ry + 7))
         n = len(self.folder)
         if n > self._LIB_ROWS:
             bar_h = self._LIB_ROWS * 28

@@ -5,6 +5,7 @@ import constants as C
 import effects as FX
 import sprite_manager as SM
 import tile_warp
+import sfx
 
 
 def _flash_white_surf(surf: pygame.Surface) -> pygame.Surface:
@@ -12,6 +13,12 @@ def _flash_white_surf(surf: pygame.Surface) -> pygame.Surface:
     white = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
     white.fill((255, 255, 255, 170))
     t.blit(white, (0, 0))
+    return t
+
+def _flash_red_surf(surf: pygame.Surface) -> pygame.Surface:
+    """Tint sprite red using additive RGB blend — transparent pixels stay transparent."""
+    t = surf.copy()
+    t.fill((200, 0, 0), special_flags=pygame.BLEND_RGB_ADD)
     return t
 
 
@@ -61,6 +68,15 @@ class Entity:
 class Player(Entity):
     PHASE_DURATION = 0.13   # total seconds for the phase-in/out effect
 
+    # Duration each action pose is held before returning to idle
+    POSE_SHOOT_DUR = 0.08
+    POSE_HURT_DUR  = 0.45
+    POSE_CAST_DUR  = 0.08
+
+    # Sprite display scale (relative to base size) and pixel offsets
+    SPRITE_SCALE  = 1.15
+    SPRITE_OFFSET = (6, -8)    # (x, y) — negative = left/up
+
     def __init__(self):
         super().__init__(1, 1, 5000, C.ELEM_NONE)
         self.col = 1
@@ -75,17 +91,48 @@ class Player(Entity):
         self.flash_timer = 0.0
         self.move_dir = [0, 0]
         # Phase movement
-        self._phase_t    = 1.0   # 1.0 = not phasing
+        self._phase_t    = 1.0
         self._phase_src  = (1, 1)
         self._phase_dst  = (1, 1)
+        # Action pose ('idle' | 'shoot' | 'hurt' | 'cast')
+        self._pose       = 'idle'
+        self._pose_timer = 0.0
+
+    def shoot_origin(self):
+        """Pixel position of Oden's throwing hand in the shoot pose, used as projectile spawn."""
+        import tile_warp
+        cx, cy = tile_warp.tile_floor_center(self.col, self.row)
+        frames = SM.get('oden_battle') or SM.get('oden_idle')
+        fw, fh = frames[0].get_size() if frames else (192, 192)
+        rs  = tile_warp.row_scale(self.row)
+        dw  = int(fw * rs * self.SPRITE_SCALE)
+        dh  = int(fh * rs * self.SPRITE_SCALE)
+        ox, oy = self.SPRITE_OFFSET
+        # shoot1.png: card at 71% from left edge, 54% from top of sprite
+        x = cx - dw // 2 + ox + int(dw * 0.71)
+        y = cy - dh + oy + int(dh * 0.54)
+        return (x, y)
+
+    def set_pose(self, pose: str) -> None:
+        """Trigger a timed action pose; 'hurt' cannot be overridden by lower-priority poses."""
+        if self._pose == 'hurt' and pose != 'hurt':
+            return
+        self._pose = pose
+        dur = {'shoot': self.POSE_SHOOT_DUR, 'hurt': self.POSE_HURT_DUR,
+               'cast': self.POSE_CAST_DUR}.get(pose, 0.0)
+        self._pose_timer = dur
 
     def take_damage(self, amount, attacker_element=C.ELEM_NONE):
         if self.guarding:
+            sfx.play('player_guard')
             return 0
         dmg = super().take_damage(amount, attacker_element)
         if dmg:
             self.iframe_timer = C.PLAYER_IFRAMES
             self.flash_timer = 0.1
+            self.charge_held = 0.0   # interrupt buster charge
+            self.set_pose('hurt')
+            sfx.play('oden_hurt')
         return dmg
 
     def phase_move(self, new_col, new_row):
@@ -110,6 +157,14 @@ class Player(Entity):
             self.pa_timer -= dt
         if self.flash_timer > 0:
             self.flash_timer -= dt
+        if self._pose_timer > 0:
+            self._pose_timer -= dt
+            if self._pose_timer <= 0:
+                self._pose = 'idle'
+        # While buster is charging, lock into shoot pose
+        if self.charge_held > 0 and self._pose != 'hurt':
+            self._pose = 'shoot'
+            self._pose_timer = 0.1
 
     def draw(self, surface):
         cx, cy = self.pixel_center()
@@ -117,14 +172,30 @@ class Player(Entity):
         if self.iframe_timer > 0 and int(self.iframe_timer * 12) % 2 == 0:
             return
 
-        # Pick frame
-        if self.flash_timer > 0:
-            frames = SM.get('oden_hurt') or SM.get('player_hurt_flash')
+        # Pick frame set based on active pose
+        pose = self._pose
+        if pose == 'hurt':
+            frames = SM.get('oden_pose_hurt') or SM.get('oden_hurt') or SM.get('player_hurt_flash')
+        elif pose == 'shoot':
+            if self.charge_held > 0:
+                frac_now = min(1.0, self.charge_held / C.CHARGE_TIME)
+                if frac_now >= 1.0:
+                    frames = SM.get('oden_pose_charge2') or SM.get('oden_pose_charge1') or SM.get('oden_pose_shoot') or SM.get('oden_battle') or SM.get('oden_idle')
+                else:
+                    frames = SM.get('oden_pose_charge1') or SM.get('oden_pose_shoot') or SM.get('oden_battle') or SM.get('oden_idle')
+            else:
+                frames = SM.get('oden_pose_shoot') or SM.get('oden_battle') or SM.get('oden_idle')
+        elif pose == 'cast':
+            frames = SM.get('oden_pose_cast') or SM.get('oden_battle') or SM.get('oden_idle')
         else:
             frames = SM.get('oden_battle') or SM.get('oden_idle') or SM.get('player_idle')
 
         if frames:
-            idx = int(self.anim_timer * 6) % len(frames)
+            # Action poses are single-frame; only idle cycles through animation frames
+            if pose == 'idle':
+                idx = int(self.anim_timer * 6) % len(frames)
+            else:
+                idx = 0
             base_frame = frames[idx]
         else:
             base_frame = None
@@ -153,18 +224,20 @@ class Player(Entity):
 
             if base_frame:
                 rs = tile_warp.row_scale(phase_row)
-                dw, dh = max(2, int(fw * rs)), max(2, int(fh * rs))
+                dw, dh = max(2, int(fw * rs * self.SPRITE_SCALE)), max(2, int(fh * rs * self.SPRITE_SCALE))
+                ox, oy = self.SPRITE_OFFSET
                 scaled = pygame.transform.smoothscale(base_frame, (dw, dh))
                 scaled.set_alpha(alpha)
-                surface.blit(scaled, (draw_cx - dw // 2, draw_cy - dh - lift))
+                surface.blit(scaled, (draw_cx - dw // 2 + ox, draw_cy - dh - lift + oy))
             return
 
-        # Normal draw — feet at ground, scaled by row depth
+        # Normal draw — feet at ground, scaled by row depth + player display scale
         rs = tile_warp.row_scale(self.row)
-        dw, dh = max(2, int(fw * rs)), max(2, int(fh * rs))
+        ox, oy = self.SPRITE_OFFSET
+        dw, dh = max(2, int(fw * rs * self.SPRITE_SCALE)), max(2, int(fh * rs * self.SPRITE_SCALE))
         if base_frame:
             scaled = pygame.transform.smoothscale(base_frame, (dw, dh))
-            surface.blit(scaled, (cx - dw // 2, cy - dh))
+            surface.blit(scaled, (cx - dw // 2 + ox, cy - dh + oy))
         else:
             body_color = C.BLUE if not self.guarding else C.LIGHT_BLUE
             pygame.draw.rect(surface, body_color,
@@ -183,14 +256,75 @@ class Player(Entity):
             glow.fill((200, 200, 50, 80))
             surface.blit(glow, (cx - fw//2 - 10, cy - fh - 10))
 
-        # Charge indicator
+        # Charge ball — layered glow + orbiting sparks
+        # Card positions measured from sprite: charge1=0.52w/0.17h, charge2=0.53w/0.14h
         if self.charge_held > 0.5:
-            frac = min(1.0, self.charge_held / C.CHARGE_TIME)
-            charge_color = C.YELLOW if frac < 1.0 else C.WHITE
-            radius = int(6 + frac * 12)
-            glow = pygame.Surface((radius * 2 + 4, radius * 2 + 4), pygame.SRCALPHA)
-            pygame.draw.circle(glow, (*charge_color, 160), (radius + 2, radius + 2), radius)
-            surface.blit(glow, (cx + fw//2 - radius + 6, cy - fh // 2 - radius))
+            frac   = min(1.0, self.charge_held / C.CHARGE_TIME)
+            pulse  = 0.85 + 0.15 * math.sin(self.anim_timer * 14)
+            if frac >= 1.0:
+                ball_x = cx - fw // 2 + ox + int(fw * 0.53)
+                ball_y = cy - fh + oy + int(fh * 0.14)
+            else:
+                ball_x = cx - fw // 2 + ox + int(fw * 0.52)
+                ball_y = cy - fh + oy + int(fh * 0.17)
+
+            if frac < 1.0:
+                core_col  = (255, 230, 60)
+                mid_col   = (255, 180, 20)
+                outer_col = (255, 120, 0)
+            else:
+                core_col  = (255, 255, 255)
+                mid_col   = (160, 210, 255)
+                outer_col = (80,  160, 255)
+
+            base_r  = int((6 + frac * 10) * pulse)
+            outer_r = base_r + 12
+            mid_r   = base_r + 5
+
+            # Outer halo
+            s = pygame.Surface((outer_r * 2, outer_r * 2), pygame.SRCALPHA)
+            pygame.draw.circle(s, (*outer_col, 35), (outer_r, outer_r), outer_r)
+            surface.blit(s, (ball_x - outer_r, ball_y - outer_r))
+
+            # Mid glow
+            s = pygame.Surface((mid_r * 2, mid_r * 2), pygame.SRCALPHA)
+            pygame.draw.circle(s, (*mid_col, 110), (mid_r, mid_r), mid_r)
+            surface.blit(s, (ball_x - mid_r, ball_y - mid_r))
+
+            # Core
+            s = pygame.Surface((base_r * 2, base_r * 2), pygame.SRCALPHA)
+            pygame.draw.circle(s, (*core_col, 220), (base_r, base_r), base_r)
+            surface.blit(s, (ball_x - base_r, ball_y - base_r))
+
+            # Bright centre spark
+            sp = max(2, base_r // 3)
+            s = pygame.Surface((sp * 2, sp * 2), pygame.SRCALPHA)
+            pygame.draw.circle(s, (255, 255, 255, 245), (sp, sp), sp)
+            surface.blit(s, (ball_x - sp, ball_y - sp))
+
+            # Orbiting sparks
+            n_orbs   = 3 if frac < 1.0 else 5
+            orbit_r  = base_r + 7
+            orb_size = 2 if frac < 1.0 else 3
+            for i in range(n_orbs):
+                angle = self.anim_timer * (5 + frac * 4) + (2 * math.pi * i / n_orbs)
+                sx = ball_x + int(math.cos(angle) * orbit_r)
+                sy = ball_y + int(math.sin(angle) * orbit_r)
+                s = pygame.Surface((orb_size * 2, orb_size * 2), pygame.SRCALPHA)
+                pygame.draw.circle(s, (*core_col, 210), (orb_size, orb_size), orb_size)
+                surface.blit(s, (sx - orb_size, sy - orb_size))
+
+            # Full-charge lightning spikes
+            if frac >= 1.0:
+                for i in range(6):
+                    a = self.anim_timer * 3 + (math.pi / 3) * i
+                    spike = base_r + 10
+                    ex = ball_x + int(math.cos(a) * spike)
+                    ey = ball_y + int(math.sin(a) * spike)
+                    mx = ball_x + int(math.cos(a + 0.45) * spike // 2)
+                    my = ball_y + int(math.sin(a + 0.45) * spike // 2)
+                    pygame.draw.line(surface, (180, 230, 255), (ball_x, ball_y), (mx, my), 2)
+                    pygame.draw.line(surface, (180, 230, 255), (mx, my), (ex, ey), 1)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -202,23 +336,34 @@ class Enemy(Entity):
     HP = 60
     ELEM = C.ELEM_NONE
     COLOR = C.RED
+    card_explosion = False   # set True on card-type enemies (e.g. Misdeal)
 
     def __init__(self, col, row):
         super().__init__(col, row, self.HP, self.ELEM)
         self.ai_state = "idle"
         self.ai_timer = 0.0
         self.flash_timer = 0.0
+        self.stun_timer = 0.0
 
     def take_damage(self, amount, attacker_element=C.ELEM_NONE):
+        was_alive = self.alive
         dmg = super().take_damage(amount, attacker_element)
         if dmg:
             self.flash_timer = 0.15
+            self.stun_timer = 0.5
+            if not self.alive and was_alive:
+                sfx.play('enemy_explode')
+            else:
+                sfx.play('enemy_hit')
         return dmg
 
     def update(self, dt, player, grid, eff_list):
         super().update(dt)
         if self.flash_timer > 0:
             self.flash_timer -= dt
+        if self.stun_timer > 0:
+            self.stun_timer -= dt
+            return   # paralysed — skip AI
         self._ai(dt, player, grid, eff_list)
 
     def _ai(self, dt, player, grid, eff_list):
@@ -270,7 +415,7 @@ class Enemy(Entity):
             else:
                 frame = frames
             if self.flash_timer > 0:
-                frame = _flash_white_surf(frame)
+                frame = _flash_red_surf(frame)
             fw, fh = frame.get_size()
             surface.blit(frame, (cx - fw // 2, cy - fh))   # feet at ground
             self._draw_float_hp(surface, cx, cy - fh - 4, fw)
@@ -555,10 +700,10 @@ class Slime(Enemy):
     ELEM = C.ELEM_EARTH
     COLOR = (50, 200, 50)
 
-    IDLE_TIME   = 1.2
+    IDLE_TIME   = 0.85
     MOVE_TIME   = 0.30
     ATTACK_TIME = 0.6
-    WANDER_CHANCE = 0.35   # chance to wander to a random adjacent row instead of pursuing
+    WANDER_CHANCE = 0.08
 
     def __init__(self, col, row):
         super().__init__(col, row)
@@ -566,19 +711,16 @@ class Slime(Enemy):
         self.ai_timer = self.IDLE_TIME
 
     def sprite_key(self):
-        if self.flash_timer > 0:
-            return 'gen_slime_hurt'
         return 'gen_slime_idle'
 
     def draw(self, surface):
         cx, cy = self.pixel_center()
-        key = self.sprite_key()
-        frames = SM.get(key)
+        frames = SM.get('gen_slime_idle')
         if frames:
             idx = int(self.anim_timer * 6) % len(frames)
             frame = frames[idx]
             if self.flash_timer > 0:
-                frame = _flash_white_surf(frame)
+                frame = _flash_red_surf(frame)
             fw, fh = frame.get_size()
             rs = tile_warp.row_scale(self.row)
             dw, dh = max(2, int(fw * rs)), max(2, int(fh * rs))
@@ -586,7 +728,7 @@ class Slime(Enemy):
             surface.blit(scaled, (cx - dw // 2, cy - dh))
             self._draw_float_hp(surface, cx, cy - dh - 4, dw)
         else:
-            color = C.WHITE if self.flash_timer > 0 else self.COLOR
+            color = (255, 60, 60) if self.flash_timer > 0 else self.COLOR
             self._draw_body(surface, cx, cy, color)
             self._draw_float_hp(surface, cx, cy - 32, 40)
 
@@ -594,18 +736,15 @@ class Slime(Enemy):
         self.ai_timer -= dt
         if self.ai_state == "idle":
             if self.ai_timer <= 0:
-                # Sometimes wander to a random adjacent row instead of pursuing —
-                # keeps slimes using the top and bottom rows, not just hugging
-                # the player's row.
-                if random.random() < self.WANDER_CHANCE:
-                    self._try_move(0, random.choice([-1, 1]), grid)
-                    self.ai_timer = self.MOVE_TIME
-                elif abs(self.row - player.row) > 1:
-                    self._try_move(0, 1 if player.row > self.row else -1, grid)
-                    self.ai_timer = self.MOVE_TIME
-                else:
+                row_aligned = (self.row == player.row)
+                if row_aligned and random.random() > self.WANDER_CHANCE:
+                    # Aligned — attack
                     self.ai_state = "attacking"
                     self.ai_timer = self.ATTACK_TIME
+                else:
+                    # Move vertically toward player row
+                    self._try_move(0, 1 if player.row > self.row else -1, grid)
+                    self.ai_timer = self.MOVE_TIME
 
         elif self.ai_state == "attacking":
             if self.ai_timer <= 0:

@@ -92,21 +92,25 @@ def init():
     except Exception as e:
         print(f"[sprites] bg load failed: {e}")
     try:
-        _load_generated_cards()
+        _load_oden_sprites()
     except Exception as e:
-        print(f"[sprites] generated cards load failed: {e}")
+        print(f"[sprites] oden sprites load failed: {e}")
     try:
-        _load_generated_backgrounds()
+        _load_slime_sprites()
     except Exception as e:
-        print(f"[sprites] generated backgrounds load failed: {e}")
+        print(f"[sprites] slime sprites load failed: {e}")
     try:
-        _load_generated_player()
+        _load_fx_sprites()
     except Exception as e:
-        print(f"[sprites] generated player load failed: {e}")
+        print(f"[sprites] fx sprites load failed: {e}")
     try:
-        _load_generated_slime()
+        _load_oden_poses()
     except Exception as e:
-        print(f"[sprites] generated slime load failed: {e}")
+        print(f"[sprites] oden poses load failed: {e}")
+    try:
+        _load_chip_icons()
+    except Exception as e:
+        print(f"[sprites] chip icons load failed: {e}")
     try:
         _load_title_assets()
     except Exception as e:
@@ -252,13 +256,6 @@ def _load_card_sprites():
     }
 
 
-_GEN = os.path.join(_BASE, 'assets', 'generated')
-
-
-def _gen_path(*parts):
-    return os.path.join(_GEN, *parts)
-
-
 # ── Background (scifi_bg.jpg) ─────────────────────────────────────────────────
 
 def _load_bg():
@@ -276,100 +273,95 @@ def _load_bg():
     _CACHE['bg_grid'] = surf
 
 
-# ── Generated card art ────────────────────────────────────────────────────────
+# ── Oden sprites ─────────────────────────────────────────────────────────────
 
-def _load_generated_cards():
-    cards_dir = _gen_path('cards')
-    if not os.path.isdir(cards_dir):
-        return
-    CARD_S = (80, 98)
-    for fname in os.listdir(cards_dir):
-        if not fname.endswith('.png'):
-            continue
-        name = fname[:-4]
-        img = Image.open(os.path.join(cards_dir, fname)).convert('RGBA')
-        img = _scale(img, CARD_S)
-        _CACHE[f'gen_card_{name}'] = _pil_to_surf(img)
+def _load_oden_sprites():
+    oden_dir = _path('oden')
 
+    # Battle idle / hurt fallback
+    idle_p = os.path.join(oden_dir, 'idle.png')
+    if os.path.exists(idle_p):
+        img = _pil_to_surf(Image.open(idle_p).convert('RGBA'))
+        _CACHE['oden_idle'] = [img]
 
-# ── Generated battle backgrounds ──────────────────────────────────────────────
+    # Battle action sprite
+    fight_p = os.path.join(oden_dir, 'fight.png')
+    if os.path.exists(fight_p):
+        _CACHE['oden_battle'] = [_pil_to_surf(Image.open(fight_p).convert('RGBA'))]
 
-def _load_generated_backgrounds():
-    bg_dir = _gen_path('backgrounds')
-    if not os.path.isdir(bg_dir):
-        return
-    grid_w = C.GRID_COLS * C.PANEL_W
-    grid_h = C.GRID_ROWS * C.PANEL_H
-    for fname in os.listdir(bg_dir):
-        if not (fname.endswith('.jpg') or fname.endswith('.png')):
-            continue
-        name = fname.rsplit('.', 1)[0]
-        bg = Image.open(os.path.join(bg_dir, fname)).convert('RGB')
-        bg = bg.resize((grid_w, grid_h), Image.LANCZOS)
-        surf = pygame.image.fromstring(bg.tobytes(), bg.size, 'RGB').convert()
-        dark = pygame.Surface(surf.get_size())
-        dark.fill((0, 0, 0))
-        dark.set_alpha(60)
-        surf.blit(dark, (0, 0))
-        _CACHE[f'bg_{name}'] = surf
-
-
-# ── Generated player sprite animations ───────────────────────────────────────
-
-def _load_generated_player():
-    anim_dir = _gen_path('player_anims')
-    if not os.path.isdir(anim_dir):
-        return
-    anim_names = ('idle', 'walk', 'attack_buster', 'attack_sword', 'cast_magic', 'hurt')
-    for anim in anim_names:
-        frames = []
-        for i in range(4):
-            p = os.path.join(anim_dir, f'{anim}_f{i}.png')
-            if os.path.exists(p):
-                img = Image.open(p).convert('RGBA')
-                frames.append(_pil_to_surf(img))   # full native size
-        if frames:
-            _CACHE[f'gen_player_{anim}'] = frames
-
-    # Portrait — load at 96×96 for HUD display
-    portrait_p = _gen_path('portraits', 'oden_portrait.png')
+    # HUD face portrait
+    portrait_p = os.path.join(oden_dir, 'portrait.png')
     if os.path.exists(portrait_p):
-        portrait = Image.open(portrait_p).convert('RGBA')
-        portrait = _scale(portrait, (96, 96))
-        _CACHE['gen_portrait_player'] = _pil_to_surf(portrait)
+        _CACHE['oden_face'] = _pil_to_surf(Image.open(portrait_p).convert('RGBA'))
 
-    # Oden battle/overworld sprite — load from oden/ subfolder at native size
-    oden_dir = _gen_path('oden')
-    if os.path.isdir(oden_dir):
-        ODEN_S = (130, 130)
-        idle_p = os.path.join(oden_dir, 'idle.png')
-        if os.path.exists(idle_p):
-            img = _scale(Image.open(idle_p).convert('RGBA'), ODEN_S)
-            _CACHE['oden_idle'] = [_pil_to_surf(img)]
-            _CACHE['oden_hurt'] = [_pil_to_surf(img)]
+    # Overworld directional walk — 8 directions, ping-pong [1,2,3,2]
+    mv_base = _path('sprites', 'characters', 'oden', 'movement')
+    first_idle = None
 
-        run_frames = []
-        for i in (0, 2):
-            p = os.path.join(oden_dir, f'run_f{i}.png')
+    def _load_dir(direction: str) -> list:
+        """Return [f1,f2,f3] surfaces for a direction, or [] if missing."""
+        d_dir = os.path.join(mv_base, direction)
+        frames = []
+        for n in (1, 2, 3):
+            p = os.path.join(d_dir, f'{direction}{n}.png')
             if os.path.exists(p):
-                run_frames.append(_pil_to_surf(_scale(Image.open(p).convert('RGBA'), ODEN_S)))
-        if run_frames:
-            _CACHE['oden_run'] = run_frames   # f0 ↔ f2
-            if 'oden_idle' not in _CACHE:
-                _CACHE['oden_idle'] = [run_frames[0]]
+                frames.append(_pil_to_surf(Image.open(p).convert('RGBA')))
+        return frames if len(frames) == 3 else []
 
-        fight_p = os.path.join(oden_dir, 'fight.png')
-        if os.path.exists(fight_p):
-            img = _scale(Image.open(fight_p).convert('RGBA'), ODEN_S)
-            _CACHE['oden_battle'] = [_pil_to_surf(img)]
+    def _hflip(frames: list) -> list:
+        return [pygame.transform.flip(f, True, False) for f in frames]
 
-        # Face portrait for battle HUD top strip — loaded at native size
-        portrait_p2 = os.path.join(oden_dir, 'portrait.png')
-        if os.path.exists(portrait_p2):
-            _CACHE['oden_face'] = _pil_to_surf(Image.open(portrait_p2).convert('RGBA'))
+    def _register(direction: str, frames: list) -> None:
+        nonlocal first_idle
+        f1, f2, f3 = frames
+        _CACHE[f'oden_walk_{direction}'] = [f1, f2, f3, f2]
+        _CACHE[f'oden_idle_{direction}'] = [f2]
+        if first_idle is None:
+            first_idle = f2
+
+    # Cardinals — load directly; east mirrors west if no east frames exist
+    for direction in ('south', 'north', 'west'):
+        frames = _load_dir(direction)
+        if frames:
+            _register(direction, frames)
+    east_frames = _load_dir('east')
+    west_frames = _CACHE.get('oden_walk_west', [])
+    if east_frames:
+        _register('east', east_frames)
+    elif len(west_frames) >= 3:
+        _register('east', _hflip(west_frames[:3]))
+
+    # Diagonals — load directly, fall back to mirroring the opposite diagonal
+    mirror_pairs = [('southeast', 'southwest'), ('northeast', 'northwest')]
+    for a, b in mirror_pairs:
+        fa = _load_dir(a)
+        fb = _load_dir(b)
+        if fa:
+            _register(a, fa)
+        elif fb:
+            _register(a, _hflip(fb))
+        if fb:
+            _register(b, fb)
+        elif fa:
+            _register(b, _hflip(fa))
+
+    # Legacy keys used by battle / victory code
+    if first_idle:
+        _CACHE.setdefault('oden_idle', [first_idle])
+    _CACHE.setdefault('oden_run', _CACHE.get('oden_walk_south', []))
 
 
-# ── Generated slime enemy animations ─────────────────────────────────────────
+# ── Slime enemy sprites ───────────────────────────────────────────────────────
+
+def _load_slime_sprites():
+    p = _path('sprites', 'enemies', 'slime_battle.png')
+    if not os.path.exists(p):
+        return
+    img = Image.open(p).convert('RGBA')
+    surf = _pil_to_surf(_scale(img, (96, 96)))
+    _CACHE['gen_slime_idle'] = [surf]
+    _CACHE['gen_slime_hurt'] = [_flash_white(surf)]
+
 
 def _load_title_assets():
     title_dir = _path('title')
@@ -406,9 +398,81 @@ def _load_title_assets():
             logo.tobytes(), logo.size, 'RGBA').convert_alpha()
 
 
+def _load_fx_sprites():
+    """Load sprite-based FX sheets (explosions, etc.)."""
+    fx_dir = _path('fx', 'misdeal_explosion')
+    if not os.path.isdir(fx_dir):
+        return
+    frames = []
+    for n in range(1, 10):
+        p = os.path.join(fx_dir, f'explosion{n}.png')
+        if os.path.exists(p):
+            frames.append(_pil_to_surf(Image.open(p).convert('RGBA')))
+        else:
+            break
+    if frames:
+        _CACHE['fx_misdeal_explosion'] = frames
+        print(f'[sprites] fx_misdeal_explosion: {len(frames)} frames')
+
+
+def _load_oden_poses():
+    """Load battle action poses from assets/oden/poses/, normalised to idle height."""
+    poses_dir = _path('oden', 'poses')
+    if not os.path.isdir(poses_dir):
+        return
+    # Target height: match the battle sprite (fight.png), fall back to idle.png
+    fight_path = _path('oden', 'fight.png')
+    idle_path  = _path('oden', 'idle.png')
+    ref_path   = fight_path if os.path.exists(fight_path) else idle_path
+    target_h   = Image.open(ref_path).height if os.path.exists(ref_path) else 192
+    for pose in ('shoot', 'hurt', 'cast'):
+        frames = []
+        for n in (1, 2, 3):
+            p = os.path.join(poses_dir, f'{pose}{n}.png')
+            if os.path.exists(p):
+                pil = Image.open(p).convert('RGBA')
+                scale = target_h / pil.height
+                new_w = max(1, int(pil.width * scale))
+                pil   = pil.resize((new_w, target_h), Image.LANCZOS)
+                frames.append(_pil_to_surf(pil))
+        if frames:
+            key = f'oden_pose_{pose}'
+            _CACHE[key] = frames
+            print(f'[sprites] {key}: {len(frames)} frames ({frames[0].get_size()})')
+
+    # Charge poses: charge1.png (yellow phase), charge2.png (full-charge blue phase)
+    for charge_name, cache_key in (('charge1', 'oden_pose_charge1'), ('charge2', 'oden_pose_charge2')):
+        p = os.path.join(poses_dir, f'{charge_name}.png')
+        if not os.path.exists(p) and charge_name == 'charge1':
+            p = os.path.join(poses_dir, 'charge.png')   # fallback
+        if os.path.exists(p):
+            pil   = Image.open(p).convert('RGBA')
+            scale = target_h / pil.height
+            new_w = max(1, int(pil.width * scale))
+            pil   = pil.resize((new_w, target_h), Image.LANCZOS)
+            _CACHE[cache_key] = [_pil_to_surf(pil)]
+            print(f'[sprites] {cache_key}: 1 frame ({new_w}×{target_h})')
+
+
+def _load_chip_icons():
+    """Load per-chip pixel art icons from assets/chips/icons/."""
+    icons_dir = _path('chips', 'icons')
+    if not os.path.isdir(icons_dir):
+        return
+    icons = {}
+    for f in os.listdir(icons_dir):
+        if f.endswith('.png') and not f.startswith('_'):
+            name = f[:-4]   # strip .png
+            surf = _pil_to_surf(Image.open(os.path.join(icons_dir, f)).convert('RGBA'))
+            icons[name] = surf
+    if icons:
+        _CACHE['chip_icons'] = icons
+        print(f'[sprites] chip_icons: {len(icons)} loaded')
+
+
 def _load_oden_victory():
     """Full-body Oden victory pose for the end-of-battle screen."""
-    p = _gen_path('oden', 'fullbody.png')
+    p = _path('oden', 'fullbody.png')
     if not os.path.exists(p):
         return
     img = Image.open(p).convert('RGBA')
@@ -420,30 +484,6 @@ def _load_oden_victory():
         img.tobytes(), img.size, 'RGBA').convert_alpha()
 
 
-def _load_generated_slime():
-    anim_dir = _gen_path('slime_anims')
-    if os.path.isdir(anim_dir):
-        S = (80, 80)
-        for anim in ('idle', 'hurt'):
-            frames = []
-            for i in range(4):
-                p = os.path.join(anim_dir, f'{anim}_f{i}.png')
-                if os.path.exists(p):
-                    img = _remove_colorkey(Image.open(p).convert('RGBA'))
-                    frames.append(_pil_to_surf(_scale(img, S)))
-            if frames:
-                _CACHE[f'gen_slime_{anim}'] = frames
-
-    # If a dedicated battle slime sprite exists, it overrides the multi-frame
-    # gen sprite above. (PNG must have proper alpha — no colorkey needed.)
-    battle_p = _path('sprites/enemies/slime_battle.png')
-    if os.path.exists(battle_p):
-        img = Image.open(battle_p).convert('RGBA')
-        S = (96, 96)
-        surf = _pil_to_surf(_scale(img, S))
-        _CACHE['gen_slime_idle'] = [surf]
-        _CACHE['gen_slime_hurt'] = [_flash_white(surf)]
-
 
 # ── Battlefield: backgrounds, platform, and warped per-tile sprites ───────────
 
@@ -454,7 +494,7 @@ def _load_battlefield():
         return
 
     # Full-screen backgrounds (1280×720)
-    for name in ('crystalcave', 'forest', 'temple'):
+    for name in ('crystalcave', 'forest', 'temple', 'dojo'):
         p = os.path.join(bf_dir, f'{name}.png')
         if os.path.exists(p):
             bg = Image.open(p).convert('RGB')

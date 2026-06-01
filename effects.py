@@ -124,6 +124,55 @@ class ExplosionEffect(Effect):
             surface.blit(s, (self.pos[0] - radius, self.pos[1] - radius))
 
 
+class SpriteExplosionEffect(Effect):
+    """Plays a list of pygame Surfaces as a frame-by-frame explosion at pos.
+    Each frame is shown for frame_dur seconds; the sprite is centred on pos
+    (adjusted by y_offset) and scaled to display_size.
+    A brief cross-fade flicker is blended between each frame transition.
+    """
+    layer = 'ceiling'
+    FLICKER_DUR  = 0.040   # tail of each frame that flickers to next (seconds)
+    FLICKER_RATE = 0.013   # strobe period — alternates ~3 times per transition
+
+    def __init__(self, pos, frames: list, frame_dur: float = 0.12,
+                 display_size: int = 220, y_offset: int = -70):
+        self.pos          = pos
+        self.frames       = frames
+        self.frame_dur    = frame_dur
+        self.display_size = display_size
+        self.y_offset     = y_offset
+        self.timer        = 0.0
+        self.alive        = True
+
+    def update(self, dt):
+        self.timer += dt
+        if self.timer >= self.frame_dur * len(self.frames):
+            self.alive = False
+
+    def draw(self, surface):
+        if not self.frames:
+            return
+        sz  = self.display_size
+        idx = min(int(self.timer / self.frame_dur), len(self.frames) - 1)
+        cx  = int(self.pos[0])
+        cy  = int(self.pos[1]) + self.y_offset
+        bx  = cx - sz // 2
+        by  = cy - sz // 2
+
+        # Strobe flicker during the tail of each frame: alternate current ↔ next
+        frame_t  = self.timer % self.frame_dur
+        next_idx = min(idx + 1, len(self.frames) - 1)
+        tail_t   = frame_t - (self.frame_dur - self.FLICKER_DUR)
+        if tail_t > 0 and next_idx != idx:
+            tick     = int(tail_t / self.FLICKER_RATE)
+            show_idx = next_idx if tick % 2 == 0 else idx
+        else:
+            show_idx = idx
+
+        scaled = pygame.transform.scale(self.frames[show_idx], (sz, sz))
+        surface.blit(scaled, (bx, by))
+
+
 class RecoveryEffect(Effect):
     def __init__(self, pos, amount):
         self.pos = pos
@@ -490,6 +539,16 @@ class CardProjectileEffect(Effect):
     """
     CW, CH = 22, 32
 
+    # Element → (card bg tint, border color, sparkle color, trail color)
+    _ELEM_PALETTE = {
+        C.ELEM_FIRE:      ((60, 14,  4,  220), (255, 110,  30, 255), (255, 160,  60, 220), (220, 80,  20)),
+        C.ELEM_ICE:       ((4,  24, 60,  220), (140, 220, 255, 255), (180, 240, 255, 220), (80, 180, 240)),
+        C.ELEM_LIGHTNING: ((40, 40,  8,  220), (255, 240,  60, 255), (255, 255, 160, 220), (220, 210,  40)),
+        C.ELEM_EARTH:     ((24, 16,  4,  220), (160, 110,  50, 255), (200, 170, 100, 220), (140,  90,  30)),
+        C.ELEM_LIGHT:     ((50, 50, 30,  220), (255, 250, 180, 255), (255, 255, 220, 220), (220, 210, 140)),
+        C.ELEM_DARK:      ((20,  4, 40,  220), (180,  80, 255, 255), (200, 130, 255, 220), (140,  50, 200)),
+    }
+
     def __init__(self, start, end, charged=False,
                  target=None, damage=0, element=0):
         self.pos          = list(start)
@@ -508,10 +567,11 @@ class CardProjectileEffect(Effect):
         self._perp = (-self.vel[1] / d, self.vel[0] / d)
         self.dist_total   = dist
         self.dist_traveled = 0
-        self._card        = self._build_card()
         self.target       = target
         self.damage       = damage
         self.element      = element
+        self._palette     = self._ELEM_PALETTE.get(element)
+        self._card        = self._build_card()
         self.pending_damage = None   # (dealt, entity) — picked up by Battle._update_effects
 
         # Magic sparkles: each particle = [x, y, vx, vy, life_remaining, life_total, kind]
@@ -521,17 +581,21 @@ class CardProjectileEffect(Effect):
 
     def _build_card(self):
         surf = pygame.Surface((self.CW, self.CH), pygame.SRCALPHA)
-        pygame.draw.rect(surf, (10, 16, 65, 230), (0, 0, self.CW, self.CH), border_radius=3)
-        border_col = (220, 180, 255, 255) if self.charged else (195, 165, 65, 255)
+        if self._palette:
+            bg_col, border_col, star_col, _ = self._palette
+        elif self.charged:
+            bg_col, border_col, star_col = (10, 16, 65, 230), (220, 180, 255, 255), (200, 160, 255, 220)
+        else:
+            bg_col, border_col, star_col = (10, 16, 65, 230), (195, 165,  65, 255), (220, 195, 110, 220)
+        pygame.draw.rect(surf, bg_col, (0, 0, self.CW, self.CH), border_radius=3)
         pygame.draw.rect(surf, border_col, (0, 0, self.CW, self.CH), 2, border_radius=3)
         cx, cy = self.CW // 2, self.CH // 2
-        star_col = (200, 160, 255, 220) if self.charged else (220, 195, 110, 220)
         for ang in range(0, 360, 45):
             rad = math.radians(ang)
             pygame.draw.line(surf, star_col,
                              (cx, cy),
                              (cx + int(math.cos(rad) * 7), cy + int(math.sin(rad) * 7)), 1)
-        dot_col = (240, 210, 255) if self.charged else (255, 245, 190)
+        dot_col = (border_col[0], border_col[1], border_col[2], 255)
         pygame.draw.circle(surf, dot_col, (cx, cy), 2)
         return surf
 
@@ -577,7 +641,12 @@ class CardProjectileEffect(Effect):
             self.alive = False
 
     def draw(self, surface):
-        trail_col = (120, 80, 220) if self.charged else (195, 140, 40)
+        if self._palette:
+            _, border, sparkle_base, trail_col = self._palette
+        elif self.charged:
+            trail_col, sparkle_base = (120, 80, 220), (200, 160, 255)
+        else:
+            trail_col, sparkle_base = (195, 140, 40), (255, 210, 90)
         for i, tp in enumerate(self.trail):
             frac = (i + 1) / max(1, len(self.trail))
             r_t  = max(1, int(6 * frac))
@@ -585,7 +654,11 @@ class CardProjectileEffect(Effect):
             pygame.draw.circle(surface, c, (int(tp[0]), int(tp[1])), r_t)
 
         # Magic sparkles
-        if self.charged:
+        if self._palette:
+            r, g, b = sparkle_base[:3]
+            sparkle_palette = [(r, g, b), (min(255,r+40), min(255,g+40), min(255,b+40)),
+                               (255, 255, 255), (r//2, g//2, b//2)]
+        elif self.charged:
             sparkle_palette = [(220, 180, 255), (160, 110, 255), (240, 230, 255), (120, 80, 230)]
         else:
             sparkle_palette = [(255, 230, 130), (255, 200, 80), (255, 250, 200), (200, 140, 50)]

@@ -11,6 +11,7 @@ from custom_screen import CustomScreen
 import effects as FX
 import tile_warp
 import sfx
+import gamepad
 from music import music as _music, track_path
 
 
@@ -20,6 +21,13 @@ def _panel_center(col, row):
 
 
 def _draw_chip_icon(surface, chip, cx, cy, size=14):
+    icons = SM.get('chip_icons') or {}
+    icon  = icons.get(chip.name.lower())
+    if icon:
+        scaled = pygame.transform.scale(icon, (size, size))
+        surface.blit(scaled, (cx - size // 2, cy - size // 2))
+        return
+    # Procedural fallback
     if chip.heals:
         r = max(2, size // 3)
         pygame.draw.circle(surface, (220, 60, 80), (cx - r // 2, cy - 1), r)
@@ -51,20 +59,25 @@ class BattleState:
 
 
 class Battle:
-    def __init__(self, screen, folder=None):
+    def __init__(self, screen, folder=None, skip_opening=False):
         self.screen = screen
-        self.state = BattleState.OPENING
-        self.opening_timer = 2.2     # length of intro title-card sequence
-        self._opening_elapsed = 0.0  # 0 → opening_timer (for animation)
 
-        # Intro SFX schedule — one shuffle, then 6 deal sounds with organic spacing.
-        # (Times are seconds into the opening; played from update() during OPENING.)
-        self._sfx_events = [(0.05, 'shuffle', 0.85)]
-        deal_t = 0.50
-        for _ in range(6):
-            self._sfx_events.append((deal_t, 'deal', 0.65))
-            deal_t += random.uniform(0.10, 0.16)
-        self._sfx_idx = 0
+        if skip_opening:
+            self.state = BattleState.BATTLE
+            self.opening_timer    = 0.0
+            self._opening_elapsed = 0.0
+            self._sfx_events      = []
+            self._sfx_idx         = 0
+        else:
+            self.state = BattleState.OPENING
+            self.opening_timer = 2.2
+            self._opening_elapsed = 0.0
+            self._sfx_events = [(0.05, 'shuffle', 0.85)]
+            deal_t = 0.50
+            for _ in range(6):
+                self._sfx_events.append((deal_t, 'deal', 0.65))
+                deal_t += random.uniform(0.10, 0.16)
+            self._sfx_idx = 0
 
         # Outcome flags — read by game.py to decide next state
         self.finished    = False
@@ -148,12 +161,14 @@ class Battle:
         self.state = BattleState.CUSTOM
         self.custom_gauge = 0.0
         self.gauge_flash = 0.0
+        sfx.play('custom_open')
 
     def _close_custom_screen(self):
         selected = self.custom_screen_obj.get_selected_chips()
         self.chip_queue.extend(selected)  # append new chips to existing queue
         self.custom_screen_obj = None
         self.state = BattleState.BATTLE
+        sfx.play('custom_close')
 
     # ──────────────────────────────────────────────────────────────────────────
     # Event handling
@@ -217,6 +232,7 @@ class Battle:
         resolver = CHIP_EFFECTS.get(chip.effect_key)
         if resolver:
             resolver(chip, self.player, self.grid, self.enemies, self.effects)
+        sfx.play(chip.name.lower())
         targets_row = [e for e in self.enemies if e.row == self.player.row and e.alive]
         target = targets_row[0] if targets_row else (self.enemies[0] if self.enemies else None)
         if target and target.alive:
@@ -224,12 +240,16 @@ class Battle:
                 target.pixel_center(), chip.element))
         self._post_chip_damage_numbers()
         self.chip_lock_timer = C.CHIP_LOCK_TIME
+        # Trigger attack pose — 'shoot' for damaging cards, 'cast' for utility/heal
+        self.player.set_pose('shoot' if chip.damage > 0 else 'cast')
 
     def _fire_buster(self, charged=False):
         dmg = C.CHARGED_DMG if charged else C.BUSTER_DMG
         row = self.player.row
 
         self.player.buster_cooldown = C.BUSTER_COOL
+        self.player.set_pose('shoot')
+        sfx.play('buster_charged' if charged else 'buster_shoot')
         if charged:
             self.player.charge_held = 0.0
             self.effects.append(FX.ScreenFlash(C.LIGHT_BLUE, 0.08))
@@ -250,8 +270,8 @@ class Battle:
             # Card travels at ~1700 px/s; tile avg width ~112px → ~15 tiles/sec
             self.effects.insert(0, FX.PanelFlash(path, wave_speed=15.0))
 
-        # Spinning card projectile — damage applied on impact
-        src = _panel_center(self.player.col, row)
+        # Spinning card projectile — spawns from Oden's throwing hand
+        src = self.player.shoot_origin()
         dst = _panel_center(hit_col, row)
         self.effects.append(FX.CardProjectileEffect(
             src, dst, charged=charged,
@@ -262,17 +282,18 @@ class Battle:
         # so it lands when the card arrives. Burst is a particle effect that lives
         # for its own duration; spawning it now means it appears at the destination
         # immediately, which still reads as anticipation. Acceptable for now.
-        burst_col = (C.LIGHT_BLUE if charged else C.CYAN,
-                     (200, 220, 255) if charged else (180, 240, 255))
-        self.effects.append(FX.ParticleBurst(
-            dst, burst_col[0], count=18, speed=110, color_b=burst_col[1]))
+        pass  # particle burst now spawned on card arrival via _update_effects pending_damage
 
     def _post_chip_damage_numbers(self):
-        """Add damage number effects for enemies that were just hit."""
+        """Add death explosion for enemies just killed by a chip."""
         for e in self.enemies:
             if not e.alive and e.flash_timer > 0:
-                # Just died - show defeat sparkle
-                self.effects.append(FX.ExplosionEffect(e.pixel_center(), C.YELLOW, 50, 0.4))
+                pos = e.pixel_center()
+                explosion_frames = SM.get('fx_misdeal_explosion')
+                if explosion_frames:
+                    self.effects.append(FX.SpriteExplosionEffect(pos, explosion_frames))
+                else:
+                    self.effects.append(FX.ExplosionEffect(pos, C.YELLOW, 50, 0.4))
 
     def _zeta_cannon_fire(self):
         """Fire one auto-cannon burst for ZetaCannon PA."""
@@ -348,8 +369,13 @@ class Battle:
 
         # Charge buster
         keys = pygame.key.get_pressed()
-        if keys[pygame.K_x]:
+        if keys[pygame.K_x] or 1 in gamepad.buttons_held:
+            prev_charge = self.player.charge_held
             self.player.charge_held += dt
+            if prev_charge == 0.0:
+                sfx.play('buster_charge_start')
+            elif prev_charge < C.CHARGE_TIME <= self.player.charge_held:
+                sfx.play('buster_charge_full')
         else:
             # Release handled in events; reset if not pressed
             pass
@@ -401,6 +427,7 @@ class Battle:
             self.move_timer -= dt
             return
         keys = pygame.key.get_pressed()
+        joy  = gamepad.active()
         moved = False
 
         def _try_move(dc, dr):
@@ -414,13 +441,13 @@ class Battle:
                 return True
             return False
 
-        if keys[pygame.K_LEFT]:
+        if keys[pygame.K_LEFT]  or 'left'  in joy:
             moved = _try_move(-1, 0)
-        elif keys[pygame.K_RIGHT]:
+        elif keys[pygame.K_RIGHT] or 'right' in joy:
             moved = _try_move(1, 0)
-        elif keys[pygame.K_UP]:
+        elif keys[pygame.K_UP]    or 'up'    in joy:
             moved = _try_move(0, -1)
-        elif keys[pygame.K_DOWN]:
+        elif keys[pygame.K_DOWN]  or 'down'  in joy:
             moved = _try_move(0, 1)
 
         if moved:
@@ -440,8 +467,18 @@ class Battle:
                     new_fx.append(FX.DamageNumber(entity.pixel_center(), dealt, color))
                     if is_player:
                         new_fx.append(FX.ScreenFlash(C.RED))
-                    elif not entity.alive:
-                        new_fx.append(FX.ExplosionEffect(entity.pixel_center(), C.YELLOW, 50, 0.4))
+                    else:
+                        # Particle burst on impact (deferred to card arrival)
+                        elem = getattr(eff, 'element', 0)
+                        charged = getattr(eff, 'charged', False)
+                        bc = C.ELEM_COLOR.get(elem, C.LIGHT_BLUE if charged else C.CYAN)
+                        new_fx.append(FX.ParticleBurst(entity.pixel_center(), bc, count=14, speed=100))
+                        if not entity.alive:
+                            frames = SM.get('fx_misdeal_explosion')
+                            if frames:
+                                new_fx.append(FX.SpriteExplosionEffect(entity.pixel_center(), frames))
+                            else:
+                                new_fx.append(FX.ExplosionEffect(entity.pixel_center(), C.YELLOW, 50, 0.4))
         self.effects = [e for e in self.effects if e.alive] + new_fx
 
     def _restart(self):
@@ -451,8 +488,8 @@ class Battle:
     # Draw
     # ──────────────────────────────────────────────────────────────────────────
 
-    def draw(self):
-        surface = self.screen
+    def draw(self, target=None):
+        surface = target if target is not None else self.screen
 
         # Background gradient
         self._draw_background(surface)
@@ -499,7 +536,7 @@ class Battle:
             self._draw_opening(surface)
 
     # Battlefield to use for this battle (cycled via assets/battlefields/*)
-    BATTLEFIELD = 'forest'   # 'forest' | 'crystalcave' | 'temple'
+    BATTLEFIELD = 'dojo'   # 'dojo' | 'forest' | 'crystalcave' | 'temple'
 
     def _draw_background(self, surface):
         # Layer 1: battlefield background

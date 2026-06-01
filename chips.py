@@ -105,23 +105,26 @@ def _longbow_resolve(chip, player, grid, enemies, eff):
 # ── Fire (Ignite / Scorch / Immolate) ─────────────────────────────────────────
 
 def _fire_resolve(chip, player, grid, enemies, eff):
-    """T1/T2: row-aimed orb with adjacent-row splash."""
+    """T1/T2: row-aimed card with adjacent-row splash."""
     row = player.row
     primary = None
+    hit_col = C.GRID_COLS - 1
     for col in range(player.col + 1, C.GRID_COLS):
         targets = [e for e in enemies if e.col == col and e.row == row and e.alive]
         if targets:
             primary = targets[0]
+            hit_col = col
             for e in enemies:
                 if e.col == col and abs(e.row - row) == 1 and e.alive:
                     _dmg(e, chip.damage // 2, chip.element)
             eff.append(_eff().ExplosionEffect(_pc(col, row), C.ORANGE, 35, 0.28))
             break
     _add_travel_flash(eff, player.col, row, (255, 130, 40))
-    src = _pc(player.col, row)
-    eff.append(_eff().TravelingHit(
-        src, row, player.col, C.GRID_COLS - 1,
-        chip.damage, chip.element, primary, C.ORANGE, 9
+    src = player.shoot_origin()
+    dst = _pc(hit_col, row)
+    eff.append(_eff().CardProjectileEffect(
+        src, dst, charged=False,
+        target=primary, damage=chip.damage, element=chip.element,
     ))
 
 def _immolate_resolve(chip, player, grid, enemies, eff):
@@ -141,22 +144,25 @@ def _immolate_resolve(chip, player, grid, enemies, eff):
 # ── Ice (Freeze / Icicle / Blizzard) ──────────────────────────────────────────
 
 def _freeze_resolve(chip, player, grid, enemies, eff):
-    """T1/T2: ice shard with adjacent-row splash."""
+    """T1/T2: ice card with adjacent-row splash."""
     row = player.row
     primary = None
+    hit_col = C.GRID_COLS - 1
     for col in range(player.col + 1, C.GRID_COLS):
         targets = [e for e in enemies if e.col == col and e.row == row and e.alive]
         if targets:
             primary = targets[0]
+            hit_col = col
             for e in enemies:
                 if e.col == col and abs(e.row - row) == 1 and e.alive:
                     _dmg(e, chip.damage // 2, chip.element)
             break
     _add_travel_flash(eff, player.col, row, (140, 210, 255))
-    src = _pc(player.col, row)
-    eff.append(_eff().TravelingHit(
-        src, row, player.col, C.GRID_COLS - 1,
-        chip.damage, chip.element, primary, C.LIGHT_BLUE, 10
+    src = player.shoot_origin()
+    dst = _pc(hit_col, row)
+    eff.append(_eff().CardProjectileEffect(
+        src, dst, charged=False,
+        target=primary, damage=chip.damage, element=chip.element,
     ))
 
 def _blizzard_resolve(chip, player, grid, enemies, eff):
@@ -176,13 +182,15 @@ def _blizzard_resolve(chip, player, grid, enemies, eff):
 # ── Lightning (Jolt / Shock / Electrocute) ────────────────────────────────────
 
 def _jolt_resolve(chip, player, grid, enemies, eff):
-    """T1/T2: bolt down the row, then chain-arcs through column on hit."""
+    """T1/T2: lightning card down the row, then chain-arcs through column on hit."""
     row = player.row
     primary = None
+    hit_col = C.GRID_COLS - 1
     for col in range(player.col + 1, C.GRID_COLS):
         targets = [e for e in enemies if e.col == col and e.row == row and e.alive]
         if targets:
             primary = targets[0]
+            hit_col = col
             for r in range(C.GRID_ROWS):
                 if r != row:
                     for e in enemies:
@@ -191,10 +199,11 @@ def _jolt_resolve(chip, player, grid, enemies, eff):
             eff.append(_eff().ElecEffect(_pc(col, row)))
             break
     _add_travel_flash(eff, player.col, row, (255, 240, 100))
-    src = _pc(player.col, row)
-    eff.append(_eff().TravelingHit(
-        src, row, player.col, C.GRID_COLS - 1,
-        chip.damage, chip.element, primary, C.YELLOW, 7
+    src = player.shoot_origin()
+    dst = _pc(hit_col, row)
+    eff.append(_eff().CardProjectileEffect(
+        src, dst, charged=False,
+        target=primary, damage=chip.damage, element=chip.element,
     ))
 
 def _electrocute_resolve(chip, player, grid, enemies, eff):
