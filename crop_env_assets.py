@@ -48,6 +48,10 @@ LAYOUTS: dict[str, dict] = {
         'edric_nw', 'edric_sw', 'hanzo_nw', 'hanzo_sw',
         'townsfolk_nw', 'townsfolk_sw', 'apprentice_nw', 'apprentice_sw',
         'traveler_nw', 'traveler_sw']},
+    'buildings_cardhollow': {'folder': 'buildings', 'names': [
+        'cottage', 'courier_post', 'general_store', 'cottage2']},
+    'buildings_veilgate': {'folder': 'buildings', 'names': [
+        'scholar_house', 'dojo_hall', 'inn', 'shop']},
 }
 
 

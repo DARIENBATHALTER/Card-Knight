@@ -399,6 +399,12 @@ MAPS = {
         'props': [
             {'tile': (10, 9), 'type': 'shrine'},   # free-standing in the square
         ],
+        'buildings': [
+            {'sprite': 'scholar_house', 'origin': (2, 2),   'w': 4, 'h': 4},
+            {'sprite': 'dojo_hall',     'origin': (9, 2),   'w': 6, 'h': 4},
+            {'sprite': 'inn',           'origin': (3, 18),  'w': 4, 'h': 3},
+            {'sprite': 'shop',          'origin': (18, 18), 'w': 4, 'h': 3},
+        ],
         'objects': [
             # Trees framing the old town
             {'tile': (1, 1),  'asset': 'pine_large'}, {'tile': (8, 1),  'asset': 'oak'},

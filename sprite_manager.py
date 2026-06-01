@@ -153,7 +153,7 @@ def _load_env_assets():
     if not os.path.isdir(base):
         return
     count = 0
-    for category in ('tiles', 'objects', 'npcs'):
+    for category in ('tiles', 'objects', 'npcs', 'buildings'):
         cdir = os.path.join(base, category)
         if not os.path.isdir(cdir):
             continue

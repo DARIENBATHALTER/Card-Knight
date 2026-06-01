@@ -273,6 +273,18 @@ class Overworld:
         # Objects (decorative billboards: trees, rocks, lamps, signs, chests…)
         self._objects = mdef.get('objects', [])
 
+        # Whole-building sprites: footprints stay solid for collision, but render as
+        # a single generated sprite. Tiles in a sprite-backed footprint skip cube
+        # drawing. If a building's sprite is missing, it falls back to the cube.
+        self._buildings = mdef.get('buildings', [])
+        self._sprite_footprint: set[tuple[int, int]] = set()
+        for b in self._buildings:
+            if SM.get(f"env_buildings_{b['sprite']}"):
+                c0, r0 = b['origin']
+                for rr in range(r0, r0 + b['h']):
+                    for cc in range(c0, c0 + b['w']):
+                        self._sprite_footprint.add((cc, rr))
+
         # Terrain-wall palette: forest maps get green foliage blocks; towns/interiors
         # keep gray stone for their border/perimeter walls.
         if map_name == 'briar_road':
@@ -600,8 +612,16 @@ class Overworld:
         for r in range(self._rows):
             row = self._grid[r]
             for c in range(len(row)):
-                if row[c] == map_defs.TILE_WALL:
+                if row[c] == map_defs.TILE_WALL and (c, r) not in self._sprite_footprint:
                     drawables.append((c + r, 'tile', c, r, row[c]))
+
+        for b in self._buildings:
+            if (b['origin'][0], b['origin'][1]) in self._sprite_footprint:
+                # Sort at the footprint's front (south) corner so the building
+                # occludes characters behind it and yields to those in front.
+                c0, r0 = b['origin']
+                fc, fr = c0 + b['w'] - 1, r0 + b['h'] - 1
+                drawables.append((fc + fr + 0.45, 'building', c0, r0, b))
 
         for prop in self._props:
             pc, pr = prop['tile']
@@ -629,6 +649,8 @@ class Overworld:
             if kind == 'tile':
                 if cull_x0 < sx < cull_x1 and cull_y0 < sy < cull_y1:
                     self._draw_tile(surf, sx, sy, data, hw, hh, wh, int(c), int(r))
+            elif kind == 'building':
+                self._draw_building(surf, ox, oy, hw, hh, data)
             elif kind == 'prop':
                 self._draw_prop(surf, sx, sy, data)
             elif kind == 'object':
@@ -764,6 +786,31 @@ class Overworld:
         pygame.draw.ellipse(shp, (0, 0, 0, 70), shp.get_rect())
         surf.blit(shp, (sx - ssw // 2, sy - shp.get_height() // 2))
         surf.blit(img, (sx - ow_ // 2, sy - img.get_height()))
+
+    def _draw_building(self, surf, ox, oy, hw, hh, b):
+        """Render a whole-building sprite over its footprint, anchored so its base
+        sits at the footprint's front (south) corner and it occludes correctly."""
+        raw = SM.get(f"env_buildings_{b['sprite']}")
+        if not raw:
+            return
+        c0, r0 = b['origin']
+        w, h = b['w'], b['h']
+        # Footprint diamond width on screen ≈ (w+h) * hw; scale sprite to fit.
+        target_w = int((w + h) * hw * 0.98)
+        key = (b['sprite'], target_w)
+        img = self._obj_cache.get(key)
+        if img is None:
+            sw, sh = raw.get_size()
+            th = max(1, round(sh * target_w / sw))
+            img = pygame.transform.smoothscale(raw, (int(target_w), th))
+            self._obj_cache[key] = img
+        # Centre x = footprint centre tile; base y = south corner bottom point.
+        cc = c0 + (w - 1) / 2.0
+        cr = r0 + (h - 1) / 2.0
+        center_sx = int((cc - cr) * hw + ox)
+        south_d   = (c0 + w - 1) + (r0 + h - 1)
+        base_sy   = int(south_d * hh + oy + hh)
+        surf.blit(img, (center_sx - img.get_width() // 2, base_sy - img.get_height()))
 
     def _draw_prop(self, surf, sx, sy, prop_type):
         # Prefer the generated shrine art; fall back to the polygon shrine.
