@@ -268,6 +268,13 @@ MAPS = {
         'props': [
             {'tile': (10, 7), 'type': 'shrine'},   # free-standing, no enclosure
         ],
+        # Solid wall footprints (collision) rendered as whole building sprites.
+        'buildings': [
+            {'sprite': 'cottage',       'origin': (2, 2),   'w': 3, 'h': 3},
+            {'sprite': 'courier_post',  'origin': (12, 2),  'w': 4, 'h': 3},
+            {'sprite': 'general_store', 'origin': (3, 13),  'w': 3, 'h': 3},
+            {'sprite': 'cottage2',      'origin': (15, 13), 'w': 3, 'h': 3},
+        ],
         'objects': [
             # Trees lining the village
             {'tile': (1, 1),  'asset': 'oak'},        {'tile': (7, 1),  'asset': 'pine_large'},

@@ -52,9 +52,49 @@ LAYOUTS: dict[str, dict] = {
 
 
 def _magenta_mask(arr: np.ndarray) -> np.ndarray:
-    """True where pixel is the magenta key background."""
+    """True where pixel is the magenta key background (used for blob detection)."""
     r, g, b = arr[..., 0].astype(int), arr[..., 1].astype(int), arr[..., 2].astype(int)
     return (r > 170) & (b > 170) & (g < 110)
+
+
+def _dilate(mask: np.ndarray, iters: int = 1) -> np.ndarray:
+    m = mask.copy()
+    for _ in range(iters):
+        d = m.copy()
+        d[:-1, :] |= m[1:, :]; d[1:, :] |= m[:-1, :]
+        d[:, :-1] |= m[:, 1:]; d[:, 1:] |= m[:, :-1]
+        m = d
+    return m
+
+
+def _dekey(arr: np.ndarray) -> np.ndarray:
+    """Remove magenta background AND the pink anti-aliased halo.
+
+    1. Hard-key the (near-pure) magenta background -> transparent.
+    2. Dilate that mask into a 2px edge RING, then on the ring neutralise the
+       magenta cast: strongly-magenta fringe pixels go fully transparent, mild
+       ones get their R/B pulled down to G (despill). Interior purples are
+       untouched because they're not adjacent to the keyed background.
+    """
+    a = arr.copy()
+    R = a[..., 0].astype(np.int16)
+    G = a[..., 1].astype(np.int16)
+    B = a[..., 2].astype(np.int16)
+    cast = np.minimum(R, B) - G               # how magenta a pixel is
+
+    bg = (R > 200) & (B > 200) & (G < 70)      # near-pure background
+    a[bg, 3] = 0
+
+    ring = _dilate(bg, 2) & (~bg) & (a[..., 3] > 0)
+    pink = ring & (R > G + 8) & (B > G + 8)
+
+    # Strong halo -> transparent; mild halo -> despill (pull R,B toward G)
+    drop = pink & (cast > 38)
+    desp = pink & (cast <= 38)
+    a[drop, 3] = 0
+    a[..., 0] = np.where(desp, np.minimum(R, G + 6), a[..., 0]).astype(np.uint8)
+    a[..., 2] = np.where(desp, np.minimum(B, G + 6), a[..., 2]).astype(np.uint8)
+    return a
 
 
 def _label(mask: np.ndarray) -> tuple[np.ndarray, int]:
@@ -127,10 +167,8 @@ def process(sheet: str, info: dict):
 
     boxes = _reading_order(boxes)
 
-    # Build a transparent (magenta-keyed) full image once
-    keyed = arr.copy()
-    keyed[mag, 3] = 0
-    keyed_img = Image.fromarray(keyed, 'RGBA')
+    # Build a transparent (magenta-keyed + de-fringed) full image once
+    keyed_img = Image.fromarray(_dekey(arr), 'RGBA')
 
     out_dir = OUT / info['folder']
     out_dir.mkdir(parents=True, exist_ok=True)

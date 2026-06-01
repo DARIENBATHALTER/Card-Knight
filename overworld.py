@@ -766,6 +766,18 @@ class Overworld:
         surf.blit(img, (sx - ow_ // 2, sy - img.get_height()))
 
     def _draw_prop(self, surf, sx, sy, prop_type):
+        # Prefer the generated shrine art; fall back to the polygon shrine.
+        asset = {'shrine': 'shrine', 'shrine_ruined': 'shrine_ruined'}.get(prop_type)
+        if asset:
+            img = self._obj_surf(asset, _OBJECT_H.get(asset, 100))
+            if img:
+                iw = img.get_width()
+                ssw = max(10, int(iw * 0.6))
+                shp = pygame.Surface((ssw, max(4, ssw // 3)), pygame.SRCALPHA)
+                pygame.draw.ellipse(shp, (0, 0, 0, 70), shp.get_rect())
+                surf.blit(shp, (sx - ssw // 2, sy - shp.get_height() // 2))
+                surf.blit(img, (sx - iw // 2, sy - img.get_height()))
+                return
         if   prop_type == 'shrine':        self._draw_shrine(surf, sx, sy, False)
         elif prop_type == 'shrine_ruined': self._draw_shrine(surf, sx, sy, True)
 

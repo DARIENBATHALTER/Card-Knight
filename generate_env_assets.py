@@ -151,6 +151,45 @@ JOBS: dict[str, dict] = {
         ),
     },
 
+    # ── BUILDINGS — Cardhollow (warm village) ─────────────────────────────────
+    # Whole isometric building sprites (not tiles). Door clearly on the front
+    # (lower) face. Same iso angle + lighting as the reference town shots.
+    'buildings_cardhollow': {
+        'refs': [REF_OCTOPATH, REF_TOWN, REF_VISTA],
+        'size': '1536x1024',
+        'prompt': (
+            f"{_STYLE} FOUR separate complete ISOMETRIC BUILDINGS for a warm fantasy "
+            "village, each a freestanding structure viewed from the same 2:1 dimetric "
+            "angle as the reference towns, with the DOOR on the front (lower) wall facing "
+            "the viewer and a peaked tiled/thatched roof. Arrange the four in a 2x2 grid, "
+            "well separated: "
+            "(1) a small cozy timber-and-plaster COTTAGE (Oden's home), warm lit windows. "
+            "(2) a COURIER POST / small post office with a hanging sign and parcel crates by "
+            "the door. "
+            "(3) a GENERAL STORE with an awning and goods barrels out front. "
+            "(4) a modest neighbour's COTTAGE, slightly different roof colour. "
+            f"{_GRID} {_MAGENTA}"
+        ),
+    },
+
+    # ── BUILDINGS — Veilgate (older stone town) ───────────────────────────────
+    'buildings_veilgate': {
+        'refs': [REF_OCTOPATH, REF_DOJO, REF_VISTA],
+        'size': '1536x1024',
+        'prompt': (
+            f"{_STYLE} FOUR separate complete ISOMETRIC BUILDINGS for an older weathered "
+            "stone town, same 2:1 dimetric angle as the references, DOOR on the front face, "
+            "peaked roofs, arranged in a 2x2 grid well separated: "
+            "(1) a SCHOLAR'S HOUSE — stone-and-timber two-storey with tall arched windows and "
+            "a deep blue roof (retired knight Edric's home). "
+            "(2) a DOJO / martial dueling HALL — wide low building, dark timber, blue banners, "
+            "a crest over the doorway (matches the dojo interior reference). "
+            "(3) a cozy stone INN with a wooden 'INN' sign and warm windows. "
+            "(4) a stone SHOP with an awning. "
+            f"{_GRID} {_MAGENTA}"
+        ),
+    },
+
     # ── NPCs — group B (Veilgate) ───────────────────────────────────────────────
     'npcs_veilgate': {
         'refs': [REF_OCTOPATH],
