@@ -123,7 +123,11 @@ def init():
         _load_oden_victory()
     except Exception as e:
         print(f"[sprites] oden victory load failed: {e}")
-    print("[sprites] init complete — loaded:", list(_CACHE.keys()))
+    try:
+        _load_env_assets()
+    except Exception as e:
+        print(f"[sprites] env assets load failed: {e}")
+    print("[sprites] init complete — loaded:", len(_CACHE), "keys")
 
 
 def get(key: str, default=None):
@@ -137,6 +141,33 @@ def get_frame(key: str, timer: float, fps: float = 6) -> pygame.Surface | None:
         return None
     idx = int(timer * fps) % len(frames)
     return frames[idx]
+
+
+# ── Generated environment assets (assets/env/{tiles,objects,npcs}) ───────────
+
+def _load_env_assets():
+    """Load every cropped, magenta-keyed env sprite under assets/env/ into the
+    cache as 'env_<category>_<name>' (e.g. env_tiles_grass1, env_npcs_mira_sw).
+    Files are already keyed transparent and tightly cropped — loaded as-is."""
+    base = _path('env')
+    if not os.path.isdir(base):
+        return
+    count = 0
+    for category in ('tiles', 'objects', 'npcs'):
+        cdir = os.path.join(base, category)
+        if not os.path.isdir(cdir):
+            continue
+        for fn in os.listdir(cdir):
+            if not fn.lower().endswith('.png'):
+                continue
+            name = os.path.splitext(fn)[0]
+            try:
+                surf = _pil_to_surf(Image.open(os.path.join(cdir, fn)).convert('RGBA'))
+                _CACHE[f'env_{category}_{name}'] = surf
+                count += 1
+            except Exception:
+                pass
+    print(f"[sprites] env assets: {count} loaded")
 
 
 # ── Player (gumbot.png — 256×224, 32×32 cells, pink colorkey) ────────────────

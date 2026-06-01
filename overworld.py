@@ -26,6 +26,27 @@ EXIT_TRIGGER_DIST    = 0.75    # exit fires when player is this close (tiles)
 # Set of map names that are interiors (for door rendering + sound)
 _INTERIOR_MAPS = frozenset({'home', 'courier', 'store', 'edric', 'dojo', 'inn'})
 
+# Target on-screen render height (px) for generated decorative objects.
+_OBJECT_H = {
+    'oak': 156, 'pine_large': 150, 'pine_small': 112, 'dead_tree': 150,
+    'bush_plain': 52, 'bush_berry': 52, 'bush_flower': 52, 'bush_flower2': 52,
+    'rock_small': 42, 'rock_cluster': 58, 'boulder': 82, 'rock_mossy': 70,
+    'stump': 48, 'flowers_blue': 34, 'flowers_purple': 34,
+    'crystal_blue': 70, 'crystal_purple': 70,
+    'signpost': 92, 'sign_flat': 68, 'fence': 56, 'fence_post': 60,
+    'lamp_post': 120, 'lantern_hanging': 72, 'market_stall': 120,
+    'chest_wood': 56, 'chest_gold': 60, 'barrel': 60, 'crate': 60,
+    'shrine': 100, 'shrine_ruined': 100,
+}
+
+# NPC display name → generated sprite base (NW/SW poses; NE/SE via flip).
+_NPC_SPRITE = {
+    'Mira': 'mira', 'Courier Master': 'courier', "Oden's Mother": 'mother',
+    'Shopkeeper': 'shopkeeper', 'Edric': 'edric', 'Sage Hanzo': 'hanzo',
+    'Townsfolk': 'townsfolk', 'Dojo Apprentice': 'apprentice',
+    'Tired Traveler': 'traveler',
+}
+
 # ── Tile colour palettes ──────────────────────────────────────────────────────
 
 # Border/structural walls (stone, gray)
@@ -248,6 +269,72 @@ class Overworld:
                 elif dc > bc and dr == br:
                     face = 'se'
                 self._door_panels[best] = face
+
+        # Objects (decorative billboards: trees, rocks, lamps, signs, chests…)
+        self._objects = mdef.get('objects', [])
+
+        # Terrain-wall palette: forest maps get green foliage blocks; towns/interiors
+        # keep gray stone for their border/perimeter walls.
+        if map_name == 'briar_road':
+            self._terr_top, self._terr_left, self._terr_right = \
+                (52, 92, 44), (34, 64, 30), (43, 78, 37)
+        else:
+            self._terr_top, self._terr_left, self._terr_right = \
+                _WALL_TOP, _WALL_LEFT, _WALL_RIGHT
+
+        # Pre-scale generated ground-tile art to the tile footprint, once per map.
+        self._is_interior = map_name in _INTERIOR_MAPS
+        self._tile_imgs = self._build_tile_imgs()
+        self._obj_cache: dict = {}   # asset name -> scaled Surface
+
+    # ── Generated-art helpers ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _scale_to_w(surf, w):
+        sw, sh = surf.get_size()
+        h = max(1, round(sh * w / sw))
+        return pygame.transform.smoothscale(surf, (int(w), h))
+
+    def _build_tile_imgs(self):
+        """Map each tile type → list of scaled generated-tile Surfaces (variants)."""
+        if self._is_interior:
+            names = {
+                map_defs.TILE_PATH:  ['wood_floor1', 'wood_floor2'],
+                map_defs.TILE_GRASS: ['tatami_floor'],
+                map_defs.TILE_DIRT:  ['stone_floor'],
+                map_defs.TILE_WATER: ['water'],
+            }
+        else:
+            names = {
+                map_defs.TILE_GRASS: ['grass1', 'grass2', 'grass3'],
+                map_defs.TILE_PATH:  ['cobblestone', 'dirt_path'],
+                map_defs.TILE_DIRT:  ['packed_earth'],
+                map_defs.TILE_WATER: ['water'],
+            }
+        out = {}
+        for ttype, keys in names.items():
+            surfs = []
+            for k in keys:
+                s = SM.get(f'env_tiles_{k}')
+                if s:
+                    surfs.append(self._scale_to_w(s, self._tile_w))
+            if surfs:
+                out[ttype] = surfs
+        return out
+
+    def _obj_surf(self, asset, target_h):
+        """Scaled generated object/NPC sprite, cached by (asset, height)."""
+        key = (asset, target_h)
+        if key in self._obj_cache:
+            return self._obj_cache[key]
+        raw = SM.get(f'env_objects_{asset}') or SM.get(f'env_npcs_{asset}')
+        surf = None
+        if raw:
+            sw, sh = raw.get_size()
+            w = max(1, round(sw * target_h / sh))
+            surf = pygame.transform.smoothscale(raw, (w, int(target_h)))
+        self._obj_cache[key] = surf
+        return surf
 
     # ── Camera ────────────────────────────────────────────────────────────────
 
@@ -492,20 +579,23 @@ class Overworld:
         cull_y1 = C.SCREEN_H + self._building_h + wh * 6
 
         # ── Pass 1: GROUND tiles only (flat floor types) ──────────────────────
-        # Drawn first, in depth order, so ground can NEVER clip over a character
-        # standing on or behind it. Walls/buildings are handled in pass 2 where
-        # they depth-sort against entities for correct occlusion.
+        # Drawn first, in depth (col+row) order so generated tile art with a
+        # thick base lip overlaps back-to-front, and ground never clips over a
+        # character. Walls/buildings + entities depth-sort in pass 2.
+        floor = []
         for r in range(self._rows):
             row = self._grid[r]
             for c in range(len(row)):
-                if row[c] == map_defs.TILE_WALL:
-                    continue
-                sx = int((c - r) * hw + ox)
-                sy = int((c + r) * hh + oy)
-                if cull_x0 < sx < cull_x1 and cull_y0 < sy < cull_y1:
-                    self._draw_tile(surf, sx, sy, row[c], hw, hh, wh, c, r)
+                if row[c] != map_defs.TILE_WALL:
+                    floor.append((c + r, c, r, row[c]))
+        floor.sort(key=lambda d: d[0])
+        for depth, c, r, ttype in floor:
+            sx = int((c - r) * hw + ox)
+            sy = int((c + r) * hh + oy)
+            if cull_x0 < sx < cull_x1 and cull_y0 < sy < cull_y1:
+                self._draw_floor(surf, sx, sy, ttype, hw, hh, c, r)
 
-        # ── Pass 2: WALLS + props + entities + player, depth-sorted ───────────
+        # ── Pass 2: WALLS + props + objects + entities + player, depth-sorted ──
         drawables = []
         for r in range(self._rows):
             row = self._grid[r]
@@ -516,6 +606,10 @@ class Overworld:
         for prop in self._props:
             pc, pr = prop['tile']
             drawables.append((pc + pr + 0.4, 'prop', pc, pr, prop['type']))
+
+        for obj in self._objects:
+            oc, orr = obj['tile']
+            drawables.append((oc + orr + 0.45, 'object', oc, orr, obj['asset']))
 
         for npc in self.npcs:
             drawables.append((npc.col + npc.row + 0.5, 'npc', npc.col, npc.row, npc))
@@ -537,6 +631,8 @@ class Overworld:
                     self._draw_tile(surf, sx, sy, data, hw, hh, wh, int(c), int(r))
             elif kind == 'prop':
                 self._draw_prop(surf, sx, sy, data)
+            elif kind == 'object':
+                self._draw_object(surf, sx, sy, data)
             elif kind == 'npc':
                 self._draw_npc(surf, sx, sy, data)
             elif kind == 'enemy':
@@ -576,9 +672,9 @@ class Overworld:
             # upward (rather than down) is what makes a building correctly OCCLUDE
             # a character standing behind it once tiles depth-sort by (col+row).
             H  = self._building_h if is_building else wh
-            tc = _BLDG_TOP   if is_building else _WALL_TOP
-            lc = _BLDG_LEFT  if is_building else _WALL_LEFT
-            rc = _BLDG_RIGHT if is_building else _WALL_RIGHT
+            tc = _BLDG_TOP   if is_building else self._terr_top
+            lc = _BLDG_LEFT  if is_building else self._terr_left
+            rc = _BLDG_RIGHT if is_building else self._terr_right
 
             # Only draw a side face when the neighbour sharing it is NOT also a wall,
             # so a solid building reads as one structure with no internal seams.
@@ -636,6 +732,39 @@ class Overworld:
 
             pygame.draw.polygon(surf, (0, 0, 0), top, 1)
 
+    def _draw_floor(self, surf, sx, sy, ttype, hw, hh, c, r):
+        """Draw a ground tile — generated art if available, else flat polygon."""
+        variants = self._tile_imgs.get(ttype)
+        if variants:
+            img = variants[(c * 7 + r * 13) % len(variants)]
+            # Generated tiles are scaled to width=tile_w; place the diamond top
+            # at (sx, sy-hh) so they tessellate, base lip overlapping forward.
+            surf.blit(img, (sx - hw, sy - hh))
+            return
+        tc  = _TILE_TOP.get(ttype, (100, 100, 100))
+        top = [(sx, sy - hh), (sx + hw, sy), (sx, sy + hh), (sx - hw, sy)]
+        pygame.draw.polygon(surf, tc, top)
+        if ttype == map_defs.TILE_WATER:
+            shimmer = int(25 + 20 * abs(math.sin(self._timer * 2.2 + c * 0.4 + r * 0.3)))
+            hl = tuple(min(255, x + shimmer) for x in tc)
+            pygame.draw.polygon(surf, hl, [
+                (sx, sy - hh), (sx + hw // 2, sy - hh // 2),
+                (sx, sy), (sx - hw // 2, sy - hh // 2)])
+        pygame.draw.polygon(surf, (0, 0, 0), top, 1)
+
+    def _draw_object(self, surf, sx, sy, asset):
+        target_h = _OBJECT_H.get(asset, int(self._tile_h * 1.8))
+        img = self._obj_surf(asset, target_h)
+        if not img:
+            return
+        ow_ = img.get_width()
+        # Soft contact shadow
+        ssw = max(8, int(ow_ * 0.55))
+        shp = pygame.Surface((ssw, max(4, ssw // 3)), pygame.SRCALPHA)
+        pygame.draw.ellipse(shp, (0, 0, 0, 70), shp.get_rect())
+        surf.blit(shp, (sx - ssw // 2, sy - shp.get_height() // 2))
+        surf.blit(img, (sx - ow_ // 2, sy - img.get_height()))
+
     def _draw_prop(self, surf, sx, sy, prop_type):
         if   prop_type == 'shrine':        self._draw_shrine(surf, sx, sy, False)
         elif prop_type == 'shrine_ruined': self._draw_shrine(surf, sx, sy, True)
@@ -687,13 +816,23 @@ class Overworld:
             pygame.draw.circle( surf, C.WHITE,     (sx, sy - 38), 9, 2)
 
     def _draw_npc(self, surf, sx, sy, npc):
-        bob  = int(math.sin(self._timer * 2.2) * 2)
-        col  = npc.color
-        lite = tuple(min(255, c + 50) for c in col)
-        pygame.draw.ellipse(surf, (0, 0, 0), (sx - 9, sy - 4, 18, 8))
-        pygame.draw.rect(surf, col,  (sx - 8, sy - 28 + bob, 16, 20), border_radius=3)
-        pygame.draw.circle(surf, col,  (sx, sy - 34 + bob), 9)
-        pygame.draw.circle(surf, lite, (sx, sy - 34 + bob), 9, 1)
+        sprite = _NPC_SPRITE.get(npc.name)
+        img = self._obj_surf(f'{sprite}_sw', int(CHAR_H * 0.92)) if sprite else None
+        if img:
+            iw = img.get_width()
+            ssw = max(10, int(iw * 0.7))
+            shp = pygame.Surface((ssw, max(4, ssw // 3)), pygame.SRCALPHA)
+            pygame.draw.ellipse(shp, (0, 0, 0, 80), shp.get_rect())
+            surf.blit(shp, (sx - ssw // 2, sy - shp.get_height() // 2))
+            surf.blit(img, (sx - iw // 2, sy - img.get_height()))
+        else:
+            bob  = int(math.sin(self._timer * 2.2) * 2)
+            col  = npc.color
+            lite = tuple(min(255, c + 50) for c in col)
+            pygame.draw.ellipse(surf, (0, 0, 0), (sx - 9, sy - 4, 18, 8))
+            pygame.draw.rect(surf, col,  (sx - 8, sy - 28 + bob, 16, 20), border_radius=3)
+            pygame.draw.circle(surf, col,  (sx, sy - 34 + bob), 9)
+            pygame.draw.circle(surf, lite, (sx, sy - 34 + bob), 9, 1)
         dist = math.hypot(self.player_col - npc.col, self.player_row - npc.row)
         if dist <= TALK_DIST_TILES:
             lf  = fonts.serif(13, bold=True)

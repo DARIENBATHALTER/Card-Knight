@@ -268,6 +268,25 @@ MAPS = {
         'props': [
             {'tile': (10, 7), 'type': 'shrine'},   # free-standing, no enclosure
         ],
+        'objects': [
+            # Trees lining the village
+            {'tile': (1, 1),  'asset': 'oak'},        {'tile': (7, 1),  'asset': 'pine_large'},
+            {'tile': (19, 1), 'asset': 'pine_large'}, {'tile': (1, 6),  'asset': 'pine_small'},
+            {'tile': (18, 6), 'asset': 'oak'},        {'tile': (1, 12), 'asset': 'pine_large'},
+            {'tile': (10, 12),'asset': 'oak'},        {'tile': (19, 12),'asset': 'pine_small'},
+            {'tile': (1, 20), 'asset': 'pine_large'}, {'tile': (10, 20),'asset': 'oak'},
+            {'tile': (19, 20),'asset': 'pine_large'}, {'tile': (7, 18), 'asset': 'pine_small'},
+            {'tile': (13, 18),'asset': 'oak'},
+            # Bushes & flowers
+            {'tile': (5, 6),  'asset': 'bush_flower'}, {'tile': (9, 6),  'asset': 'bush_plain'},
+            {'tile': (17, 7), 'asset': 'bush_berry'},  {'tile': (3, 11), 'asset': 'bush_flower2'},
+            {'tile': (18, 11),'asset': 'bush_plain'},  {'tile': (6, 16), 'asset': 'bush_flower'},
+            {'tile': (15, 6), 'asset': 'flowers_blue'},{'tile': (8, 12), 'asset': 'flowers_purple'},
+            # Furnishings
+            {'tile': (2, 8),  'asset': 'signpost'},    {'tile': (14, 6), 'asset': 'lamp_post'},
+            {'tile': (6, 8),  'asset': 'lamp_post'},    {'tile': (18, 19),'asset': 'chest_wood'},
+            {'tile': (16, 16),'asset': 'barrel'},
+        ],
         'blocking_msg': {
             # Message shown when player tries to exit west without the package
             'from_briar': "I should pick up that delivery first.",
@@ -306,6 +325,17 @@ MAPS = {
         ],
         'props': [
             {'tile': (_BR_MID + 1, max(2, _BR_MID_CEN - 3)), 'type': 'shrine_ruined'},
+        ],
+        'objects': [
+            # Signposts at each end of the route
+            {'tile': (_BR_W - 3, _BR_EAST_CEN), 'asset': 'signpost'},
+            {'tile': (3,          _BR_WEST_CEN), 'asset': 'signpost'},
+            # Trees & brush dressing the mid-route clearing shoulders
+            {'tile': (_BR_MID - 2, max(2, _BR_MID_CEN - 4)), 'asset': 'pine_large'},
+            {'tile': (_BR_MID + 2, max(2, _BR_MID_CEN - 4)), 'asset': 'dead_tree'},
+            {'tile': (_BR_MID - 1, min(_BR_H - 2, _BR_MID_CEN + 4)), 'asset': 'bush_flower'},
+            {'tile': (_BR_MID + 2, min(_BR_H - 2, _BR_MID_CEN + 4)), 'asset': 'rock_mossy'},
+            {'tile': (_BR_MID,     max(2, _BR_MID_CEN - 4)), 'asset': 'flowers_blue'},
         ],
         'blocking_msg': {},
     },
@@ -361,6 +391,23 @@ MAPS = {
         ],
         'props': [
             {'tile': (10, 9), 'type': 'shrine'},   # free-standing in the square
+        ],
+        'objects': [
+            # Trees framing the old town
+            {'tile': (1, 1),  'asset': 'pine_large'}, {'tile': (8, 1),  'asset': 'oak'},
+            {'tile': (16, 1), 'asset': 'pine_large'}, {'tile': (20, 1), 'asset': 'pine_small'},
+            {'tile': (1, 7),  'asset': 'oak'},        {'tile': (20, 7), 'asset': 'pine_large'},
+            {'tile': (1, 21), 'asset': 'pine_large'}, {'tile': (20, 22),'asset': 'oak'},
+            # Lamps around the cobbled square + market stall
+            {'tile': (5, 8),  'asset': 'lamp_post'},  {'tile': (15, 8), 'asset': 'lamp_post'},
+            {'tile': (5, 10), 'asset': 'lamp_post'},  {'tile': (15, 10),'asset': 'lamp_post'},
+            {'tile': (8, 7),  'asset': 'market_stall'},
+            # Bushes / flowers
+            {'tile': (2, 7),  'asset': 'bush_flower'}, {'tile': (19, 13),'asset': 'bush_berry'},
+            {'tile': (7, 13), 'asset': 'flowers_purple'},
+            # Store goods + signpost at the east gate
+            {'tile': (16, 19),'asset': 'crate'},      {'tile': (16, 20),'asset': 'barrel'},
+            {'tile': (20, 11),'asset': 'signpost'},
         ],
         'blocking_msg': {},
     },
